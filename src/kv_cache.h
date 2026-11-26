@@ -40,6 +40,15 @@ struct Session {
   std::vector<KvLayer> layers;
 
   uint64_t bytes() const { return static_cast<uint64_t>(len) * width * sizeof(float) * 2 * layers.size(); }
+
+  // --- Part 5: moving and repairing a cache ---
+  // Forget everything after the first n tokens (also undoes a half-finished step).
+  void truncate(int n);
+  // Tokens [from, to) as a matrix: one row per token, holding that token's
+  // key and value for every layer, side by side.
+  Mat export_rows(int from, int to) const;
+  // The inverse: append the tokens of such a matrix to this cache.
+  void import_rows(const Mat& rows);
 };
 
 // All sessions on this rank, by id. Every rank creates and erases the same
@@ -51,6 +60,8 @@ class SessionTable {
   Session& create(uint64_t id, int n_layer, int width);  // throws if the id exists or the table is full
   Session* find(uint64_t id);                            // nullptr if absent
   bool erase(uint64_t id);
+  void clear() { sessions_.clear(); }
+  std::vector<uint64_t> ids() const;
   size_t size() const { return sessions_.size(); }
 
  private:

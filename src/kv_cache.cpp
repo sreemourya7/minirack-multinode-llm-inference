@@ -1,6 +1,7 @@
 #include "kv_cache.h"
 
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 
 namespace mr {
@@ -20,6 +21,49 @@ Session* SessionTable::find(uint64_t id) {
 }
 
 bool SessionTable::erase(uint64_t id) { return sessions_.erase(id) > 0; }
+
+std::vector<uint64_t> SessionTable::ids() const {
+  std::vector<uint64_t> out;
+  for (const auto& kv : sessions_) out.push_back(kv.first);
+  return out;
+}
+
+void Session::truncate(int n) {
+  const size_t floats = static_cast<size_t>(n) * width;
+  for (KvLayer& l : layers) {
+    if (l.k.size() > floats) l.k.resize(floats);
+    if (l.v.size() > floats) l.v.resize(floats);
+  }
+  if (len > n) len = n;
+}
+
+Mat Session::export_rows(int from, int to) const {
+  const size_t w = static_cast<size_t>(width);
+  Mat out(to - from, static_cast<int>(layers.size() * 2 * w));
+  for (int t = from; t < to; ++t) {
+    float* dst = out.row(t - from);
+    for (const KvLayer& l : layers) {
+      std::memcpy(dst, l.k.data() + static_cast<size_t>(t) * w, w * sizeof(float));
+      std::memcpy(dst + w, l.v.data() + static_cast<size_t>(t) * w, w * sizeof(float));
+      dst += 2 * w;
+    }
+  }
+  return out;
+}
+
+void Session::import_rows(const Mat& rows) {
+  const size_t w = static_cast<size_t>(width);
+  if (rows.cols != static_cast<int>(layers.size() * 2 * w)) throw std::runtime_error("import_rows: wrong row width");
+  for (int t = 0; t < rows.rows; ++t) {
+    const float* src = rows.row(t);
+    for (KvLayer& l : layers) {
+      l.k.insert(l.k.end(), src, src + w);
+      l.v.insert(l.v.end(), src + w, src + 2 * w);
+      src += 2 * w;
+    }
+  }
+  len += rows.rows;
+}
 
 Mat attend_cached(const Mat& qkv, int n_head, KvLayer& cache, int old_len) {
   const int Tn = qkv.rows;

@@ -43,11 +43,16 @@ enum MsgType : uint32_t {
   MSG_RELEASE = 12,  // client -> root. payload: u64 session
   MSG_TOKEN = 13,    // reply when FLAG_ARGMAX is set. payload: int32 token, float32 its logit
   MSG_OK = 14,       // reply to MSG_RELEASE
+
+  // --- Part 5: failure handling (see mesh.h) ---
+  MSG_ABORT = 15,      // root -> rank: drop the request in progress
+  MSG_ABORT_ACK = 16,  // rank -> root: dropped; nothing more from me for that request
 };
 
 enum : uint32_t {
   FLAG_LAST_ONLY = 1u << 0,  // only return logits for the final token
   FLAG_ARGMAX = 1u << 1,     // pick the best next token on the rack; reply with MSG_TOKEN, not logits
+  FLAG_BACKUP = 1u << 2,     // (set by the root) after this step, send your new cache rows to the root
 };
 
 struct Msg {
@@ -63,6 +68,16 @@ int listen_on(int port);                             // returns a listening fd, 
 int accept_one(int listen_fd);                       // blocks; returns a connected fd or -1
 int connect_to(const std::string& host, int port);   // returns fd or -1
 void close_fd(int fd);
+
+// Part 5. After this, a send or receive on fd that makes no progress for `ms`
+// milliseconds fails instead of blocking forever (0 switches the limit off).
+void set_io_timeout_ms(int fd, int ms);
+// True if the most recent failed send_msg / recv_msg failed because of that
+// limit, false if the peer closed the connection or another error occurred.
+bool last_io_timed_out();
+// Blocks until one of `fds` has data to read (or has been closed by its peer)
+// and returns its index, or returns -1 after timeout_ms (-1 = wait forever).
+int wait_readable(const std::vector<int>& fds, int timeout_ms);
 
 // --- framed messages -------------------------------------------------------
 bool send_msg(int fd, const Msg& m);  // false if the peer went away

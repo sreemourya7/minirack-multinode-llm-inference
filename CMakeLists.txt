@@ -24,6 +24,8 @@ add_library(mr_core STATIC
   src/tp_model.cpp
   src/moe.cpp
   src/kv_cache.cpp
+  src/exec.cpp
+  src/root.cpp
 )
 target_include_directories(mr_core PUBLIC src)
 

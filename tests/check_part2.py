@@ -15,7 +15,7 @@ Every request also runs the rack's own check that all ranks hold a
 bit-identical hidden state. Two failure paths are then forced on purpose:
 
   6. one rank corrupts its hidden state  -> the replica check must catch it
-  7. one rank is killed                  -> the client gets an error, not a hang
+  7. one rank is killed, none replaces it -> the client gets an error, not a hang
 
 Finally it times a 32-token request for each rank count.
 """
@@ -110,7 +110,10 @@ def main():
             failures += not ok
             print(f"  rank 1 corrupts its hidden state: {'detected' if ok else 'wrong error  <-- FAIL'} ({e})")
 
-    with TpRack(args.rank_binary, args.weights, 2, args.log_dir, tag="_killed") as rack, \
+    # Since Part 5 the root waits for a replacement rank before giving up. Here
+    # none will come, so keep that wait short. (Recovery itself is tested in check_part5.py.)
+    with TpRack(args.rank_binary, args.weights, 2, args.log_dir, tag="_killed",
+                extra=["--rejoin-timeout-ms", "1000"]) as rack, \
             Client("127.0.0.1", rack.port, timeout=30.0) as c:
         c.forward(sequences[2])  # healthy before the kill
         rack.procs[1].kill()
@@ -119,9 +122,9 @@ def main():
             try:
                 c.forward(sequences[2])
                 failures += 1
-                print(f"  rank 1 killed, request {attempt}: got an answer   <-- FAIL")
+                print(f"  rank 1 killed and not replaced, request {attempt}: got an answer   <-- FAIL")
             except WorkerError as e:
-                print(f"  rank 1 killed, request {attempt}: error reply ({e})")
+                print(f"  rank 1 killed and not replaced, request {attempt}: error reply ({str(e)[:60]}...)")
 
     base = timing[0][1]
     print(f"\nlatency of one {TIMED_T}-token request (best of {TIMED_RUNS}), measured on the root rank")

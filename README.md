@@ -17,7 +17,7 @@ goes) at a size that fits on a laptop.
 | 2 | Collectives (broadcast, all-reduce, gather) and tensor parallelism: every rank works on every layer at once | done |
 | 3 | A Mixture-of-Experts layer with experts sharded across ranks and per-token routing | done |
 | 4 | KV cache, separate prefill and decode paths, per-request state | done |
-| 5 | Failure detection and recovery when a rank dies mid-generation | planned |
+| 5 | Failure detection and recovery when a rank dies or hangs mid-generation | done |
 | 6 | AVX2 kernels for the hot paths, and a profile of compute versus communication | planned |
 
 ## Two ways to split a model
@@ -67,6 +67,19 @@ attention heads.
  release                     --> free the session on every rank
 ```
 
+**Part 5, failure recovery.** A rank is killed or freezes while text is being
+generated. The root notices, cancels the half-done step on the surviving
+ranks, takes in a replacement, rebuilds the lost cache, and runs the step
+again. The client sees a pause, no error, and exactly the same output.
+
+```
+ rank 1 dies       root notices: socket      replacement:         cache rebuilt:        the interrupted
+ or hangs     -->  closed, or silent    -->  a waiting standby,   replay the tokens, --> step runs again
+                   past the timeout          or a new process     or copy a checkpoint
+```
+
+![Rebuild time against session length for the two recovery strategies](docs/part5-recovery.svg)
+
 ## Requirements
 
 - Linux (on Windows, use WSL2). The networking code uses POSIX sockets.
@@ -97,6 +110,7 @@ python3 tests/check_part1.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part2.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part3.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part4.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
+python3 tests/check_part5.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 
 # Or run a rack by hand
 scripts/run_local.sh weights/gpt2.mrkw        # Part 1: 2-worker pipeline
@@ -108,6 +122,14 @@ scripts/run_local_tp.sh weights/gpt2.mrkw 2 weights/moe8.mrkw
 
 # Part 4: with a (dense) rack running, generate text from another terminal
 python3 scripts/generate.py --hf-dir weights/gpt2 --prompt "Hello, my dog is cute" --tokens 30
+
+# Part 5: kill a rank mid-generation and compare with an undisturbed run (one command)
+python3 scripts/demo_failover.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
+python3 scripts/demo_failover.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2 --recovery replay --no-standby
+python3 scripts/demo_failover.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2 --hang
+
+# Or keep a rack running under the supervisor, generate from another terminal, and `kill -9` a rank yourself
+python3 scripts/supervisor.py --weights weights/gpt2.mrkw --nranks 2 --standby --recovery checkpoint
 ```
 
 ## Results
@@ -140,7 +162,7 @@ it buys is memory, and throughput once several requests are in flight.
 | Same request twice | bit-identical |
 | All ranks hold a bit-identical hidden state | checked on every request |
 | One rank corrupts its hidden state (forced in the test) | caught by the replica check |
-| One rank is killed | client gets an error reply, no hang |
+| One rank is killed and nothing replaces it | client gets an error reply after the configured wait, no hang |
 
 Latency of one 32-token request (last-position logits, best of 5):
 
@@ -249,9 +271,72 @@ How to read this:
   single measurement per run and should be read as roughly 1.7x to 2.0x
   faster than one rank.
 
-Known limits overall: the code is a deliberately plain baseline (speed
-is Part 6), and a lost rank takes the rack down until it is restarted
-(recovery is Part 5).
+### Part 5: failure recovery
+
+Every scenario is run twice, once undisturbed and once with a failure, and the
+logits must be bit-identical with no error reaching the client.
+
+| Scenario | Result |
+|----------|--------|
+| Rank killed between two steps, two sessions open (replay and checkpoint) | both sessions continue, bit-identical |
+| Rank killed in the middle of a prefill or a decode step (2 ranks) | step is run again, bit-identical |
+| The same with 3 ranks, killing either non-root rank | the surviving rank drops the half-done step, falls back in step, bit-identical |
+| Rank frozen with SIGSTOP (root timeout 1000 ms) | found by timeout, standby takes over, bit-identical; the frozen process exits by itself when woken |
+| Rank killed and nothing replaces it | clear error after the configured wait; nothing half-applied; the session carries on once a replacement arrives |
+| Three failures during one generation | bit-identical |
+| Under the supervisor, killed at token 9 of 24 | text identical to Hugging Face `generate` |
+| Mixture-of-Experts model | bit-identical |
+
+What the client sees on the step that hits the failure (64-token session,
+2 ranks; a normal step is 55 to 61 ms):
+
+| Replacement | State rebuilt by | That step | of which waiting for a rank | of which rebuilding |
+|-------------|------------------|-----------|-----------------------------|---------------------|
+| new process (loads its weights) | replay | 1635 ms | 208 ms | 1368 ms |
+| new process (loads its weights) | checkpoint | 274 ms | 211 ms | 1.8 ms |
+| standby (weights already loaded) | replay | 1333 ms | 0 ms | 1279 ms |
+| standby (weights already loaded) | checkpoint | 76 ms | 0 ms | 2.0 ms |
+
+Time to rebuild one session on the replacement rank (the chart above):
+
+| Tokens in the session | Replay | Checkpoint | Checkpoint copies |
+|-----------------------|--------|------------|-------------------|
+| 16 | 348 ms | 0.2 ms | 0.6 MB |
+| 64 | 1341 ms | 2.0 ms | 2.4 MB |
+| 128 | 2646 ms | 6.3 ms | 4.7 MB |
+| 256 | 5763 ms | 11.7 ms | 9.4 MB |
+| 512 | 11013 ms | 31.0 ms | 18.9 MB |
+
+How to read this:
+
+- With a standby and checkpoints, a `kill -9` costs the client about one
+  extra step: 76 ms here, and 108 ms in the demo where the kill landed in the
+  middle of a step that then had to be run again. With neither it costs
+  1.6 s, and that grows with the session.
+- Replay rebuilds at about 21 ms per token, so its cost follows the session
+  length: 11 s at 512 tokens. Checkpoint copies bytes back: 31 ms at 512
+  tokens, about 350 times faster.
+- Checkpointing is not free. Every decode step ships 37 kB more (188 kB
+  instead of 151 kB, 24% more), and the root holds a second copy of the other
+  ranks' cache (37 kB per token here). Step time was 57 to 61 ms with either
+  strategy across two runs, so on loopback the time cost is below the noise.
+- A crash is noticed at once, because the dead process's socket closes. A
+  frozen process keeps its socket open, so only the timeout reveals it: with
+  a 1000 ms timeout that step took about 1070 ms.
+- Exactness comes from Part 4. Replay works because prefill and step-by-step
+  decode build bit-identical caches, so re-running the tokens recreates
+  exactly what was lost.
+
+Known limits of the recovery: the root itself is a single point of failure
+(it holds the client connections, the token history and the checkpoints). A
+frozen rank is only noticed while a request is running. The timeout must be
+longer than the slowest legitimate step, and a rank that is merely slow past
+it is replaced although it was healthy. Without a standby the supervisor
+cannot replace a frozen process, because it never exits. If the replica check
+fails (silent corruption) the rack still stops rather than repairs itself.
+
+Known limits overall: the code is a deliberately plain baseline (speed is
+Part 6), and the root serves one client at a time.
 
 ## Layout
 
@@ -262,12 +347,15 @@ src/weights.*      .mrkw weight file reader (whole tensors or row slices)
 src/net.*          sockets and the framed wire protocol
 src/model.*        Part 1 shard: embedding? + layers A..B + head?
 src/worker.cpp     Part 1 process: one stage of the pipeline
-src/mesh.*         Part 2 collectives: broadcast, all-reduce, gather, replica check
+src/mesh.*         Part 2 collectives: broadcast, all-reduce, gather, replica check; Part 5 abort and rejoin
 src/tp_model.*     Part 2 shard: a slice of every layer
 src/moe.*          Part 3 router, top-k, gates, and sparse expert execution
 src/kv_cache.*     Part 4 sessions, the KV cache, and attention that uses it
-src/rank.cpp       Part 2-4 process: one tensor-parallel rank
-scripts/           weight export, MoE file generator, Python client, text generation demo, local launchers
+src/exec.*         the program every rank runs for one request
+src/root.cpp       rank 0: front door, event loop, and Part 5 failure recovery
+src/rank.cpp       main(), options, and the loop of every non-root rank
+scripts/           weight export, MoE file generator, Python client, text generation demo,
+                   supervisor, failover demo, recovery chart, local launchers
 tests/             correctness checks against PyTorch
 docs/              per-part notes: concepts used and decisions taken
 ```

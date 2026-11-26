@@ -1,6 +1,7 @@
 """Helpers shared by the per-part correctness checks."""
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -53,22 +54,58 @@ class TpRack:
 
     moe: optional path to an MoE sidecar file, passed to every rank.
     env: extra environment variables for the rank processes.
+    extra: extra command-line options for the root only.
     """
 
-    def __init__(self, binary, weights, nranks, log_dir, tag="", env=None, moe=None):
+    def __init__(self, binary, weights, nranks, log_dir, tag="", env=None, moe=None, extra=None):
         self.procs = []
+        self.spares = []
         self.logs = []
+        self.cmds = []
+        self.env = dict(os.environ, **(env or {}))
         (self.port,) = free_ports(1)
         for r in range(nranks):
             cmd = [binary, "--rank", str(r), "--nranks", str(nranks), "--weights", weights]
             cmd += ["--port", str(self.port)] if r == 0 else ["--root", f"127.0.0.1:{self.port}"]
             if moe:
                 cmd += ["--moe", moe]
+            if r == 0 and extra:
+                cmd += list(extra)  # root-only options, e.g. --recovery checkpoint
             path = os.path.join(log_dir, f"tp{tag}_{nranks}ranks_rank{r}.log")
+            open(path, "w").close()
             self.logs.append(path)
-            full_env = dict(os.environ, **(env or {}))
-            self.procs.append(subprocess.Popen(cmd, stderr=open(path, "w"), stdout=subprocess.DEVNULL, env=full_env))
+            self.cmds.append(cmd)
+            self.procs.append(None)
+            self.start(r)
         self._wait_ready()
+
+    def start(self, r):
+        """Starts (or, after a failure, replaces) rank r. Its log is appended to."""
+        self.procs[r] = subprocess.Popen(self.cmds[r], stderr=open(self.logs[r], "a"), stdout=subprocess.DEVNULL,
+                                         env=self.env)
+
+    def start_standby(self, r):
+        """Starts a spare process for rank r. The root keeps it waiting until rank r fails."""
+        proc = subprocess.Popen(self.cmds[r], stderr=open(self.logs[r], "a"), stdout=subprocess.DEVNULL, env=self.env)
+        self.spares.append(proc)
+        return proc
+
+    def kill(self, r, sig=signal.SIGKILL):
+        """Sends rank r a signal. SIGKILL: it dies at once. SIGSTOP: it hangs."""
+        self.procs[r].send_signal(sig)
+        if sig == signal.SIGKILL:
+            self.procs[r].wait()
+
+    def lines(self, rank, word):
+        """Parsed key=value fields of the log lines of `rank` that contain `word`."""
+        rows = []
+        with open(self.logs[rank]) as f:
+            for line in f:
+                if word in line:
+                    row = {k: float(v) for k, v in re.findall(r"(\w+)=(-?[\d.]+)(?=\s|$)", line)}
+                    row.update({k: v for k, v in re.findall(r"(\w+)=([a-z_]+)(?=\s|$)", line)})
+                    rows.append(row)
+        return rows
 
     def _wait_ready(self, timeout=120.0):
         from mr_client import Client
@@ -104,9 +141,12 @@ class TpRack:
         return self
 
     def __exit__(self, *exc):
-        for p in self.procs:
-            p.terminate()
-        for p in self.procs:
+        everyone = self.procs + self.spares
+        for p in everyone:
+            if p.poll() is None:
+                p.send_signal(signal.SIGCONT)  # in case a test left it stopped
+                p.terminate()
+        for p in everyone:
             p.wait(timeout=10)
 
 
@@ -164,3 +204,25 @@ def moe_reference_logits(hf_dir, moe_path, sequences):
         logits.append(out.numpy().astype(np.float32))
         loads.append(track["load"].tolist())
     return logits, loads, track["margin"], (E, k)
+
+
+def hf_greedy(hf_dir, prompt, n_new):
+    import torch
+    from transformers import GPT2LMHeadModel
+
+    torch.set_grad_enabled(False)
+    model = GPT2LMHeadModel.from_pretrained(hf_dir, local_files_only=True).eval()
+    ids = torch.tensor([prompt], dtype=torch.long)
+    out = model.generate(ids, attention_mask=torch.ones_like(ids), max_new_tokens=n_new, do_sample=False,
+                         pad_token_id=50256)
+    return out[0, len(prompt):].tolist()
+
+
+def detokenize(hf_dir, ids):
+    """Text for token ids, or None if the tokenizer files are not there."""
+    try:
+        from transformers import GPT2TokenizerFast
+
+        return GPT2TokenizerFast.from_pretrained(hf_dir, local_files_only=True).decode(ids)
+    except Exception:
+        return None

@@ -4,7 +4,9 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -28,8 +30,13 @@ struct Header {
 };
 static_assert(sizeof(Header) == 32, "header must be exactly 32 bytes");
 
+bool g_timed_out = false;  // did the last failed send / receive hit the I/O timeout?
+
+bool would_block() { return errno == EAGAIN || errno == EWOULDBLOCK; }
+
 // send() and recv() may move fewer bytes than asked. These loop until done.
 bool send_all(int fd, const void* buf, size_t n) {
+  g_timed_out = false;
   const char* p = static_cast<const char*>(buf);
   while (n > 0) {
     // MSG_NOSIGNAL: if the peer died, return an error instead of killing us
@@ -37,6 +44,7 @@ bool send_all(int fd, const void* buf, size_t n) {
     const ssize_t k = ::send(fd, p, n, MSG_NOSIGNAL);
     if (k < 0) {
       if (errno == EINTR) continue;
+      g_timed_out = would_block();
       return false;
     }
     p += k;
@@ -46,12 +54,14 @@ bool send_all(int fd, const void* buf, size_t n) {
 }
 
 bool recv_all(int fd, void* buf, size_t n) {
+  g_timed_out = false;
   char* p = static_cast<char*>(buf);
   while (n > 0) {
     const ssize_t k = ::recv(fd, p, n, 0);
     if (k == 0) return false;  // peer closed the connection
     if (k < 0) {
       if (errno == EINTR) continue;
+      g_timed_out = would_block();  // SO_RCVTIMEO expired: the peer is alive at the TCP level but silent
       return false;
     }
     p += k;
@@ -121,6 +131,30 @@ int connect_to(const std::string& host, int port) {
 
 void close_fd(int fd) {
   if (fd >= 0) ::close(fd);
+}
+
+void set_io_timeout_ms(int fd, int ms) {
+  timeval tv{};
+  tv.tv_sec = ms / 1000;
+  tv.tv_usec = (ms % 1000) * 1000;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+}
+
+bool last_io_timed_out() { return g_timed_out; }
+
+int wait_readable(const std::vector<int>& fds, int timeout_ms) {
+  std::vector<pollfd> p(fds.size());
+  for (size_t i = 0; i < fds.size(); ++i) p[i] = pollfd{fds[i], POLLIN, 0};
+  for (;;) {
+    const int n = ::poll(p.data(), p.size(), timeout_ms);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return -1;
+    for (size_t i = 0; i < p.size(); ++i) {
+      if (p[i].revents != 0) return static_cast<int>(i);  // data, hang-up and error all count
+    }
+    return -1;
+  }
 }
 
 bool send_msg(int fd, const Msg& m) {

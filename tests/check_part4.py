@@ -29,7 +29,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from common import ROOT, TpRack, moe_reference_logits, reference_logits, test_sequences  # noqa: E402
+from common import (ROOT, TpRack, detokenize, hf_greedy, moe_reference_logits, reference_logits,  # noqa: E402
+                    test_sequences)
 
 from mr_client import Client, WorkerError  # noqa: E402  (path set up by common)
 
@@ -52,28 +53,6 @@ def expect_error(label, fn, contains=""):
         return 1
     print(f"  {label}: no error   <-- FAIL")
     return 1
-
-
-def hf_greedy(hf_dir, prompt, n_new):
-    import torch
-    from transformers import GPT2LMHeadModel
-
-    torch.set_grad_enabled(False)
-    model = GPT2LMHeadModel.from_pretrained(hf_dir, local_files_only=True).eval()
-    ids = torch.tensor([prompt], dtype=torch.long)
-    out = model.generate(ids, attention_mask=torch.ones_like(ids), max_new_tokens=n_new, do_sample=False,
-                         pad_token_id=50256)
-    return out[0, len(prompt):].tolist()
-
-
-def detokenize(hf_dir, ids):
-    """Text for token ids, or None if the tokenizer files are not there."""
-    try:
-        from transformers import GPT2TokenizerFast
-
-        return GPT2TokenizerFast.from_pretrained(hf_dir, local_files_only=True).decode(ids)
-    except Exception:
-        return None
 
 
 def mean(rows, key):
