@@ -1,5 +1,8 @@
 #include "kv_cache.h"
 
+#include "kernels.h"
+#include "prof.h"
+
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -70,6 +73,7 @@ Mat attend_cached(const Mat& qkv, int n_head, KvLayer& cache, int old_len) {
   const int L = qkv.cols / 3;
   if (qkv.cols != 3 * L || L % n_head != 0) throw std::runtime_error("attend_cached: shape mismatch");
   if (cache.k.size() != static_cast<size_t>(old_len) * L) throw std::runtime_error("attend_cached: cache size is wrong");
+  prof::Scope timer(prof::kAttention);
   const int dh = L / n_head;
   const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
 
@@ -94,9 +98,7 @@ Mat attend_cached(const Mat& qkv, int n_head, KvLayer& cache, int old_len) {
       float max_score = -INFINITY;
       for (int j = 0; j <= pos; ++j) {
         const float* kj = K + static_cast<size_t>(j) * L + off;
-        float s = 0.0f;
-        for (int d = 0; d < dh; ++d) s += qi[d] * kj[d];
-        s *= scale;
+        const float s = kern::dot(qi, kj, dh) * scale;
         prob[j] = s;
         if (s > max_score) max_score = s;
       }
@@ -112,7 +114,7 @@ Mat attend_cached(const Mat& qkv, int n_head, KvLayer& cache, int old_len) {
       for (int j = 0; j <= pos; ++j) {
         const float p = prob[j] * inv_sum;
         const float* vj = V + static_cast<size_t>(j) * L + off;
-        for (int d = 0; d < dh; ++d) oi[d] += p * vj[d];
+        kern::axpy(oi, vj, p, dh);
       }
     }
   }

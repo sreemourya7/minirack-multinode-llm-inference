@@ -23,6 +23,7 @@
 //
 // Options for every rank (use the same on all):
 //   --moe FILE            turn each layer's MLP into a Mixture of Experts (Part 3)
+//   MR_KERNELS=scalar|avx2 (environment)  which inner loops to use (Part 6; default: AVX2 if the CPU has it)
 // Options for the root (Part 5):
 //   --recovery replay|checkpoint   how a replacement rank gets its state back (default replay)
 //   --rank-timeout-ms N            a rank silent for this long is treated as dead (default 10000)
@@ -39,6 +40,7 @@
 #include <string>
 
 #include "exec.h"
+#include "kernels.h"
 #include "kv_cache.h"
 #include "mesh.h"
 #include "root.h"
@@ -115,9 +117,9 @@ Options parse(int argc, char** argv) {
 // The loop of every rank except the root: wait to be told what to do, do it.
 int serve_as_rank(const Options& opt, const mr::TpShard& shard, mr::Mesh& mesh) {
   mesh.connect_to_root(opt.root_host, opt.root_port);
-  std::fprintf(stderr, "[rank %d/%d] ready  heads %d-%d  units %d-%d  vocab %d-%d  weights=%.1f MB\n", mesh.rank(),
-               mesh.size(), shard.head_begin, shard.head_end, shard.unit_begin, shard.unit_end, shard.vocab_begin,
-               shard.vocab_end, shard.resident_bytes / 1e6);
+  std::fprintf(stderr, "[rank %d/%d] ready  heads %d-%d  units %d-%d  vocab %d-%d  weights=%.1f MB  kernels=%s\n",
+               mesh.rank(), mesh.size(), shard.head_begin, shard.head_end, shard.unit_begin, shard.unit_end,
+               shard.vocab_begin, shard.vocab_end, shard.resident_bytes / 1e6, mr::kern::name(mr::kern::active()));
   mr::SessionTable sessions;
   mr::ReqInfo info;
   mr::Mat h;
@@ -152,6 +154,7 @@ int serve_as_rank(const Options& opt, const mr::TpShard& shard, mr::Mesh& mesh) 
 int main(int argc, char** argv) {
   const Options opt = parse(argc, argv);
   try {
+    mr::kern::select_from_env();  // scalar or AVX2 kernels (Part 6); MR_KERNELS overrides
     const auto t0 = std::chrono::steady_clock::now();
     mr::WeightFile wf(opt.weights);
     std::unique_ptr<mr::WeightFile> moe;

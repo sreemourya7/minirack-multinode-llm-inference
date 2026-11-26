@@ -9,7 +9,24 @@ solve (splitting a model across nodes, moving activations between them,
 keeping per-request state, surviving a dead node, and finding where the time
 goes) at a size that fits on a laptop.
 
-## Status
+## Results at a glance
+
+Everything is checked against Hugging Face GPT-2 in PyTorch. Measured on a
+2-core machine; details and caveats are in the Results section.
+
+| | Result |
+|---|---|
+| Correctness | Logits within 3e-4 of PyTorch in every configuration; greedy text is token-for-token identical |
+| Tensor parallelism | 2 ranks on 2 cores answer one request 1.8x to 2.0x faster |
+| Mixture of Experts | Running 2 of 8 experts per token halves the work; every routing decision matches a PyTorch reference |
+| KV cache | Bit-identical to recomputing from scratch; the 65th token costs about 23x less |
+| Failure recovery | `kill -9` a rank mid-generation: the output is bit-identical and the client sees no error. With a standby and checkpoints that step takes 33 ms instead of 22 to 28 |
+| AVX2 kernels | Prefill 5.5x to 6.2x faster (165 to 178 tokens/s on one rank, 318 to 378 on two). Decode 2.1x to 2.9x faster, within 6% to 16% of the memory roofline on one rank |
+| Start to finish | Generating the 65th token: 2.4 s in the first version, 20 to 29 ms in the last |
+
+![Time per token before and after the AVX2 kernels](docs/part6-profile.svg)
+
+## Parts
 
 | Part | What it adds | State |
 |------|--------------|-------|
@@ -18,9 +35,9 @@ goes) at a size that fits on a laptop.
 | 3 | A Mixture-of-Experts layer with experts sharded across ranks and per-token routing | done |
 | 4 | KV cache, separate prefill and decode paths, per-request state | done |
 | 5 | Failure detection and recovery when a rank dies or hangs mid-generation | done |
-| 6 | AVX2 kernels for the hot paths, and a profile of compute versus communication | planned |
+| 6 | AVX2 kernels for the hot paths, a profile of where the time goes, and the memory roofline | done |
 
-## Two ways to split a model
+## How it works, part by part
 
 **Part 1, pipeline split (`mr_worker`).** Cut between layers. Workers take turns.
 
@@ -80,6 +97,18 @@ again. The client sees a pause, no error, and exactly the same output.
 
 ![Rebuild time against session length for the two recovery strategies](docs/part5-recovery.svg)
 
+**Part 6, kernels and profile.** Measure where the time goes, rewrite the
+hot loops with AVX2, measure again. Prefill, where each weight matrix is
+reused for many tokens while it sits in the CPU cache, became about 6x
+faster. Decode, where one token has to read every weight once, became 2.1x to
+2.9x faster and then ran into a wall that no arithmetic trick moves: the
+speed at which the machine can read memory.
+
+```
+ time per decoded token  >=  bytes of weights read per token  /  memory read speed
+                               495 MB                          /  13.6 GB/s        =  36 ms     (measured: 40 ms)
+```
+
 ## Requirements
 
 - Linux (on Windows, use WSL2). The networking code uses POSIX sockets.
@@ -111,6 +140,8 @@ python3 tests/check_part2.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part3.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part4.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part5.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
+python3 tests/check_part6.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
+scripts/run_all_checks.sh weights/gpt2.mrkw weights/gpt2    # or: build and run all six
 
 # Or run a rack by hand
 scripts/run_local.sh weights/gpt2.mrkw        # Part 1: 2-worker pipeline
@@ -130,14 +161,27 @@ python3 scripts/demo_failover.py --weights weights/gpt2.mrkw --hf-dir weights/gp
 
 # Or keep a rack running under the supervisor, generate from another terminal, and `kill -9` a rank yourself
 python3 scripts/supervisor.py --weights weights/gpt2.mrkw --nranks 2 --standby --recovery checkpoint
+
+# Part 6: kernel tests, the microbenchmark, and the same rack with the old scalar loops
+build/mr_kernel_test
+build/mr_bench
+MR_KERNELS=scalar scripts/run_local_tp.sh weights/gpt2.mrkw 2
+python3 scripts/plot_profile.py && python3 scripts/plot_recovery.py   # redraw the charts from your own run
 ```
 
 ## Results
 
-All numbers below are from the development machine: 2 CPU cores, plain scalar
-`-O2` code, no KV cache. Run the checks on your own machine for your own
-numbers. The reference is Hugging Face `GPT2LMHeadModel` on the same weights,
+All numbers are from the development machine: a 2-core virtual machine
+(Intel Xeon, 2.1 GHz). Run the checks on your own machine for your own
+numbers; `build/mr_bench` in particular depends on your CPU's caches and
+memory. The reference is Hugging Face `GPT2LMHeadModel` on the same weights,
 over six token sequences of length 1 to 32.
+
+The tables for Parts 1 to 5 were measured with the scalar kernels, as each
+part was built. `MR_KERNELS=scalar` reproduces them. The Part 6 section
+compares scalar with AVX2 and shows how the earlier numbers moved. Timings
+vary by roughly 10% to 15% between runs on this machine, so where a result
+was measured more than once the range is given.
 
 ### Part 1: pipeline split
 
@@ -297,7 +341,8 @@ What the client sees on the step that hits the failure (64-token session,
 | standby (weights already loaded) | replay | 1333 ms | 0 ms | 1279 ms |
 | standby (weights already loaded) | checkpoint | 76 ms | 0 ms | 2.0 ms |
 
-Time to rebuild one session on the replacement rank (the chart above):
+Time to rebuild one session on the replacement rank (the recovery chart near
+the top; its third line, replay with the AVX2 kernels, is explained under Part 6):
 
 | Tokens in the session | Replay | Checkpoint | Checkpoint copies |
 |-----------------------|--------|------------|-------------------|
@@ -335,8 +380,142 @@ it is replaced although it was healthy. Without a standby the supervisor
 cannot replace a frozen process, because it never exits. If the replica check
 fails (silent corruption) the rack still stops rather than repairs itself.
 
-Known limits overall: the code is a deliberately plain baseline (speed is
-Part 6), and the root serves one client at a time.
+### Part 6: AVX2 kernels, the profile, and the memory roofline
+
+| Check | Result |
+|-------|--------|
+| Kernel unit tests: AVX2 against scalar on 15 awkward shapes (sizes that are not multiples of 8 or 4, single rows, empty inputs) | agree to the last few bits |
+| Batch invariance: T tokens in one call against one call per token, every kernel | bit-identical |
+| End to end with each kernel set: against PyTorch, cached against recomputed, greedy text against Hugging Face | within 2.7e-4; bit-identical; identical |
+| Mixture of Experts with each kernel set | every routing decision still matches the reference |
+| A scalar rank tries to join an AVX2 rack | refused |
+| All checks of Parts 1 to 5, rerun with the AVX2 kernels | pass |
+
+Before and after (32-token prompt, then 32 decoded tokens; a 256-token prompt
+for the throughput column):
+
+| Model | Ranks | Kernels | Prefill, 32 tokens | Decode per token | Prefill throughput |
+|-------|-------|---------|--------------------|------------------|--------------------|
+| Dense | 1 | scalar | 1213 ms | 108.1 ms | 25 tokens/s |
+| Dense | 1 | AVX2 | 202 ms | 40.0 ms | 177 tokens/s |
+| | | speedup | 6.0x | 2.7x | 7.0x |
+| Dense | 2 | scalar | 600 ms | 55.0 ms | 53 tokens/s |
+| Dense | 2 | AVX2 | 96 ms | 22.8 ms | 377 tokens/s |
+| | | speedup | 6.2x | 2.4x | 7.1x |
+| MoE top-2 of 8 | 2 | scalar | 407 ms | 41.7 ms | 81 tokens/s |
+| MoE top-2 of 8 | 2 | AVX2 | 74 ms | 18.5 ms | 595 tokens/s |
+| | | speedup | 5.5x | 2.3x | 7.4x |
+
+Two further full runs gave speedups of 5.5x to 6.2x for the 32-token prefill,
+2.1x to 2.9x for decode, and 6.0x to 7.6x for prefill throughput.
+
+Where one rank's time goes (dense, one rank, milliseconds per token; this is
+the chart at the top):
+
+| | Matrix multiplies | Vocabulary projection | GELU | Attention | Other | Total |
+|---|---|---|---|---|---|---|
+| Prefill, scalar | 35.74 | 0.98 | 0.85 | 0.25 | 0.08 | 37.90 |
+| Prefill, AVX2 | 4.96 | 0.41 | 0.82 | 0.05 | 0.06 | 6.31 |
+| Decode, scalar | 70.80 | 34.87 | 0.92 | 1.13 | 0.33 | 108.06 |
+| Decode, AVX2 | 24.75 | 13.47 | 0.88 | 0.57 | 0.31 | 39.98 |
+
+The matrix kernel on its own (`build/mr_bench`, one 768 x 3072 matrix,
+billions of multiply-adds per second):
+
+| Kernel | Weights in cache, 32 tokens per pass | Weights in cache, 1 token | Every weight read once | Memory read at |
+|--------|--------------------------------------|---------------------------|------------------------|----------------|
+| scalar | 2.65 | 2.68 | 1.32 | 5.3 GB/s |
+| scalar, loops reordered | 2.35 | 2.61 | 1.25 | 5.0 GB/s |
+| AVX2 | 21.76 | 7.44 | 3.67 | 14.7 GB/s |
+
+For comparison, simply reading memory on this machine runs at 13.6 GB/s per
+core.
+
+The memory roofline for decode:
+
+| Model | Ranks | Weights read per token, per rank | Time just to read them | Measured compute | Measured / roofline |
+|-------|-------|----------------------------------|------------------------|------------------|---------------------|
+| Dense | 1 | 495 MB | 36.3 ms | 40.0 ms | 1.10x |
+| Dense | 2 | 247 MB | 18.2 ms | 20.8 ms | 1.15x |
+| MoE top-2 of 8 | 2 | 162 MB (average) | 11.9 ms | 15.5 ms | 1.30x |
+
+In two further runs these ratios were 1.06x to 1.16x, 1.01x to 1.41x, and
+1.17x to 1.32x.
+
+Compute against communication (dense, 2 ranks, AVX2): copying messages took
+3.7 ms of a 96 ms prefill (4%) and 1.6 ms of a 22.8 ms decode step (7%). With
+the scalar kernels the shares were 1% and 4%.
+
+How to read this:
+
+- **Prefill is limited by arithmetic, so SIMD pays in full.** With the
+  weights in cache the AVX2 kernel does 21.8 billion multiply-adds per second
+  against 2.7 for the scalar loop, 8 times more. End to end that is 5.5x to
+  6.2x, because the parts that were not rewritten now matter.
+- **Decode is limited by memory.** One decoded token must read every weight
+  once, 495 MB, and nothing is reused. The AVX2 kernel in that situation
+  reads weights at 14.7 GB/s, which is as fast as this machine reads memory
+  at all. So decode sits within 6% to 16% of the time needed just to read
+  the weights. A faster kernel would not help. Reading fewer bytes per token
+  would.
+- **That explains the question left open in Part 4**, why a decoded token
+  costs several times a prefill token for the same arithmetic. It was already
+  true for the scalar code (2.7 against 1.3 billion multiply-adds per second,
+  cache against memory), and it is much more visible now: 6.3 ms against
+  40 ms.
+- **Both ways of reading fewer bytes per rank show up in the numbers.** Two
+  ranks each read half the weights, and decode goes from 40.0 to 22.8 ms. The
+  Mixture-of-Experts model reads only the chosen experts, and decodes in
+  18.5 ms.
+- **Reordering the loops alone did nothing for the scalar kernel** (2.35
+  against 2.65). Reusing a row of weights while it is in cache only pays once
+  the arithmetic is fast enough for memory to be the bottleneck.
+- **What was not rewritten is now visible.** GELU was 2% of a prefill token
+  and is 13% after the speedup. It was left as it is because a vector version
+  needs an approximation of `tanh`, and this project keeps exact agreement
+  with the standard library.
+- **Communication is still small here, 4% to 7%**, but its share roughly
+  doubled when compute got faster. A decode step makes 27 round trips to the
+  root whatever the model size. On hardware where the arithmetic takes
+  microseconds, those round trips would be most of the step.
+
+Faster prefill also changed Part 5, because recovery by replay *is* a prefill:
+
+| | Scalar kernels | AVX2 kernels |
+|---|---|---|
+| Replay rebuild, 512-token session | 11.0 s | 1.7 s |
+| Checkpoint rebuild, 512-token session | 31 ms | 28 ms |
+| Step that hit a `kill -9`, new process + replay | 1635 ms | 562 ms |
+| Step that hit a `kill -9`, standby + checkpoint | 76 ms | 33 ms |
+| A normal decode step, for comparison | 55 to 61 ms | 22 to 28 ms |
+
+Checkpointing still ships 24% more bytes per step. Its effect on step time
+was again below the run-to-run noise (four runs each: 21.9 to 28.0 ms with
+replay, 21.9 to 24.1 ms with checkpoint).
+
+Design rules the kernels keep: the result for one token never depends on the
+other tokens in the batch (that is what keeps decode equal to prefill, and
+replay exact), only one file is compiled with AVX2 flags and it is entered
+only after a run-time check of the CPU, and a rack refuses to mix kernel
+sets, because a replacement rank must reproduce the arithmetic of the rank it
+replaces.
+
+## Limits, and where the measurements point next
+
+- The root is a single point of failure, and it serves one client at a time.
+- Decode is at the memory roofline, so the next gain there is fewer bytes per
+  token: 16-bit or 8-bit weights would halve or quarter what each token
+  reads. Batching several sessions through one pass over the weights would
+  share that cost between them.
+- GELU is the next hotspot in prefill (13%).
+- Every message goes through the root. With more ranks a ring or tree
+  all-reduce would spread that load.
+- Experts are placed on ranks in fixed ranges. Placing them by measured load
+  would even out the 61% / 39% split seen in Part 3.
+- The Mixture-of-Experts router is random and untrained: that model exists to
+  exercise the runtime, not to produce sensible text.
+- The AVX2 kernels need an x86-64 CPU with AVX2 and FMA. Elsewhere the scalar
+  kernels are used automatically.
 
 ## Layout
 
@@ -350,12 +529,18 @@ src/worker.cpp     Part 1 process: one stage of the pipeline
 src/mesh.*         Part 2 collectives: broadcast, all-reduce, gather, replica check; Part 5 abort and rejoin
 src/tp_model.*     Part 2 shard: a slice of every layer
 src/moe.*          Part 3 router, top-k, gates, and sparse expert execution
+src/kernels.*      Part 6 the hot loops: scalar versions, and run-time choice of implementation
+src/kernels_avx2.cpp   Part 6 the AVX2 + FMA versions (the only file built with -mavx2 -mfma)
+src/prof.*         Part 6 per-operation timers
+src/bench.cpp      Part 6 microbenchmark: kernel speed hot and cold, memory read speed
+src/kernel_test.cpp    Part 6 kernel unit tests
 src/kv_cache.*     Part 4 sessions, the KV cache, and attention that uses it
 src/exec.*         the program every rank runs for one request
 src/root.cpp       rank 0: front door, event loop, and Part 5 failure recovery
 src/rank.cpp       main(), options, and the loop of every non-root rank
 scripts/           weight export, MoE file generator, Python client, text generation demo,
-                   supervisor, failover demo, recovery chart, local launchers
+                   supervisor, failover demo, chart scripts, local launchers, run_all_checks.sh
 tests/             correctness checks against PyTorch
-docs/              per-part notes: concepts used and decisions taken
+docs/              per-part notes (concepts used and decisions taken), the two charts,
+                   and docs/data/ with the measurements behind them
 ```

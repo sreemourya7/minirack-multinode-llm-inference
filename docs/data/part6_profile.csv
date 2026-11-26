@@ -1,0 +1,5 @@
+stage,kernels,matmul_ms,head_ms,gelu_ms,other_ms,total_ms,roofline_ms
+prefill,scalar,35.742,0.984,0.848,0.329,37.904,
+prefill,avx2,4.963,0.414,0.820,0.112,6.310,
+decode,scalar,70.800,34.866,0.924,1.466,108.057,36.336
+decode,avx2,24.748,13.469,0.881,0.878,39.977,36.336

@@ -1,5 +1,8 @@
 #include "ops.h"
 
+#include "kernels.h"
+#include "prof.h"
+
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -8,36 +11,23 @@ namespace mr {
 
 Mat linear(const Mat& x, const Mat& w, const Mat& b) {
   if (x.cols != w.rows || b.cols != w.cols) throw std::runtime_error("linear: shape mismatch");
+  prof::Scope timer(prof::kMatmul);
   const int T = x.rows, in = w.rows, out = w.cols;
   Mat y(T, out);
   for (int t = 0; t < T; ++t) {
     float* yt = y.row(t);
-    const float* xt = x.row(t);
-    for (int o = 0; o < out; ++o) yt[o] = b.data[o];
-    // Loop order t, i, o: the inner loop walks one row of w and one row of y,
-    // both contiguous in memory, so the cache (and the compiler) are happy.
-    for (int i = 0; i < in; ++i) {
-      const float xi = xt[i];
-      const float* wi = w.row(i);
-      for (int o = 0; o < out; ++o) yt[o] += xi * wi[o];
-    }
+    for (int o = 0; o < out; ++o) yt[o] = b.data[o];  // start from the bias ...
   }
+  kern::gemm_acc(x.data.data(), T, in, w.data.data(), out, y.data.data());  // ... and add x @ w (see kernels.h)
   return y;
 }
 
 Mat matmul(const Mat& x, const Mat& w) {
   if (x.cols != w.rows) throw std::runtime_error("matmul: shape mismatch");
+  prof::Scope timer(prof::kMatmul);
   const int T = x.rows, in = w.rows, out = w.cols;
   Mat y(T, out);
-  for (int t = 0; t < T; ++t) {
-    float* yt = y.row(t);
-    const float* xt = x.row(t);
-    for (int i = 0; i < in; ++i) {
-      const float xi = xt[i];
-      const float* wi = w.row(i);
-      for (int o = 0; o < out; ++o) yt[o] += xi * wi[o];
-    }
-  }
+  kern::gemm_acc(x.data.data(), T, in, w.data.data(), out, y.data.data());
   return y;
 }
 
@@ -51,6 +41,7 @@ void add_row_inplace(Mat& a, const Mat& row) {
 
 Mat layernorm(const Mat& x, const Mat& gamma, const Mat& beta, float eps) {
   if (gamma.cols != x.cols || beta.cols != x.cols) throw std::runtime_error("layernorm: shape mismatch");
+  prof::Scope timer(prof::kNorm);
   Mat y(x.rows, x.cols);
   const int D = x.cols;
   for (int t = 0; t < x.rows; ++t) {
@@ -73,6 +64,7 @@ Mat layernorm(const Mat& x, const Mat& gamma, const Mat& beta, float eps) {
 }
 
 void gelu_inplace(Mat& x) {
+  prof::Scope timer(prof::kGelu);
   const float k = std::sqrt(2.0f / static_cast<float>(M_PI));
   for (float& v : x.data) {
     v = 0.5f * v * (1.0f + std::tanh(k * (v + 0.044715f * v * v * v)));
@@ -88,6 +80,7 @@ Mat causal_self_attention(const Mat& qkv, int n_head) {
   const int T = qkv.rows;
   const int D = qkv.cols / 3;
   if (qkv.cols != 3 * D || D % n_head != 0) throw std::runtime_error("attention: shape mismatch");
+  prof::Scope timer(prof::kAttention);
   const int dh = D / n_head;  // features per head
   const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
 
@@ -105,9 +98,7 @@ Mat causal_self_attention(const Mat& qkv, int n_head) {
       float max_score = -INFINITY;
       for (int j = 0; j <= i; ++j) {
         const float* kj = qkv.row(j) + k_off;
-        float s = 0.0f;
-        for (int d = 0; d < dh; ++d) s += qi[d] * kj[d];
-        s *= scale;
+        const float s = kern::dot(qi, kj, dh) * scale;
         prob[j] = s;
         if (s > max_score) max_score = s;
       }
@@ -125,7 +116,7 @@ Mat causal_self_attention(const Mat& qkv, int n_head) {
       for (int j = 0; j <= i; ++j) {
         const float p = prob[j] * inv_sum;
         const float* vj = qkv.row(j) + v_off;
-        for (int d = 0; d < dh; ++d) oi[d] += p * vj[d];
+        kern::axpy(oi, vj, p, dh);
       }
     }
   }

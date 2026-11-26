@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 
+#include "kernels.h"
 #include "model.h"
 #include "net.h"
 #include "weights.h"
@@ -176,6 +177,7 @@ mr::Msg handle(const mr::Shard& shard, NextHop& next, const mr::Msg& req) {
 int main(int argc, char** argv) {
   const Options opt = parse(argc, argv);
   try {
+    mr::kern::select_from_env();  // scalar or AVX2 kernels (Part 6); MR_KERNELS overrides
     mr::WeightFile wf(opt.weights);
     const mr::Shard shard = mr::load_shard(wf, opt.first_layer, opt.last_layer, opt.embed, opt.head);
     NextHop next{opt.next_host, opt.next_port, -1};

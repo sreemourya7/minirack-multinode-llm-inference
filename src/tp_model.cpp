@@ -3,7 +3,9 @@
 #include <stdexcept>
 #include <string>
 
+#include "kernels.h"
 #include "ops.h"
+#include "prof.h"
 
 namespace mr {
 
@@ -184,16 +186,9 @@ Mat tp_head_local(const TpShard& s, const Mat& h, bool last_only) {
   const int n_local = s.vocab_end - s.vocab_begin;
   const int first = last_only ? x.rows - 1 : 0;
   Mat logits(x.rows - first, n_local);
-  for (int t = first; t < x.rows; ++t) {
-    const float* xt = x.row(t);
-    float* lt = logits.row(t - first);
-    for (int v = 0; v < n_local; ++v) {
-      const float* wv = s.wte.row(v);  // row v of my slice (on the root the slice starts at row 0)
-      float acc = 0.0f;
-      for (int d = 0; d < D; ++d) acc += xt[d] * wv[d];
-      lt[v] = acc;
-    }
-  }
+  prof::Scope timer(prof::kHead);
+  // Rows 0 .. n_local-1 of s.wte are my slice (on the root the slice starts at row 0).
+  kern::rows_dot(x.row(first), x.rows - first, D, s.wte.data.data(), n_local, logits.data.data());
   return logits;
 }
 

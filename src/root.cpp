@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "exec.h"
+#include "kernels.h"
 #include "kv_cache.h"
 #include "model.h"
 #include "net.h"
@@ -112,6 +113,10 @@ void Root::identify(int fd) {
   if (first.type == MSG_HELLO) {
     const int r = mesh_.hello_rank(first);
     if (r < 0) {
+      if (r == -2) {
+        std::fprintf(stderr, "[rank 0/%d] turned away a rank built or started with different kernels than mine (%s)\n",
+                     mesh_.size(), kern::name(kern::active()));
+      }
       close_fd(fd);  // not a rank of this rack
     } else if (mesh_.peer_fd(r) < 0) {
       mesh_.adopt_rank(r, fd);
@@ -182,10 +187,11 @@ int Root::serve() {
   mesh_.set_peer_timeout_ms(opt_.rank_timeout_ms);
   while (!mesh_.missing().empty()) pump_newcomers(-1);  // start-up: wait until every rank has joined
   std::fprintf(stderr,
-               "[rank 0/%d] ready on port %d  heads %d-%d  units %d-%d  vocab %d-%d  weights=%.1f MB  recovery=%s\n",
+               "[rank 0/%d] ready on port %d  heads %d-%d  units %d-%d  vocab %d-%d  weights=%.1f MB  recovery=%s  "
+               "kernels=%s\n",
                mesh_.size(), opt_.port, shard_.head_begin, shard_.head_end, shard_.unit_begin, shard_.unit_end,
                shard_.vocab_begin, shard_.vocab_end, shard_.resident_bytes / 1e6,
-               opt_.checkpoint ? "checkpoint" : "replay");
+               opt_.checkpoint ? "checkpoint" : "replay", kern::name(kern::active()));
 
   // One loop watches everything: new connections, the current client, and the
   // sockets of the other ranks. A rank's socket should be silent while no

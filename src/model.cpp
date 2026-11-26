@@ -3,7 +3,9 @@
 #include <stdexcept>
 #include <string>
 
+#include "kernels.h"
 #include "ops.h"
+#include "prof.h"
 
 namespace mr {
 
@@ -99,16 +101,8 @@ Mat lm_head(const Shard& s, const Mat& h, bool last_only) {
   const int V = static_cast<int>(s.cfg.vocab_size);
   const int first = last_only ? x.rows - 1 : 0;
   Mat logits(x.rows - first, V);
-  for (int t = first; t < x.rows; ++t) {
-    const float* xt = x.row(t);
-    float* lt = logits.row(t - first);
-    for (int v = 0; v < V; ++v) {
-      const float* wv = s.wte.row(v);
-      float acc = 0.0f;
-      for (int d = 0; d < D; ++d) acc += xt[d] * wv[d];
-      lt[v] = acc;
-    }
-  }
+  prof::Scope timer(prof::kHead);
+  kern::rows_dot(x.row(first), x.rows - first, D, s.wte.data.data(), V, logits.data.data());
   return logits;
 }
 

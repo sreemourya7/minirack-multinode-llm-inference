@@ -31,7 +31,7 @@ enum MsgType : uint32_t {
   MSG_ERROR = 4,   // reply. payload: UTF-8 text
 
   // --- Part 2: tensor-parallel ranks (see mesh.h) ---
-  MSG_HELLO = 5,   // rank -> root at startup.  payload: u32 rank, u32 nranks
+  MSG_HELLO = 5,   // rank -> root at startup.  payload: u32 rank, u32 nranks, u32 kernel implementation
   MSG_START = 6,   // root -> every rank: a request begins. payload: the embedded input [T, D]
   MSG_COLL = 7,    // data inside a collective.  payload: a matrix, or 8 bytes of checksum
   MSG_PING = 8,    // client -> root: are you ready?

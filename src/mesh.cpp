@@ -1,5 +1,7 @@
 #include "mesh.h"
 
+#include "kernels.h"
+
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
@@ -53,11 +55,15 @@ Mesh::~Mesh() {
 // ------------------------------------------------------------------ membership
 
 int Mesh::hello_rank(const Msg& hello) const {
-  uint32_t who[2] = {0, 0};
+  uint32_t who[3] = {0, 0, 0};  // rank, rack size, kernel implementation
   if (hello.type != MSG_HELLO || hello.payload.size() != sizeof who) return -1;
   std::memcpy(who, hello.payload.data(), sizeof who);
   const bool valid = who[1] == static_cast<uint32_t>(nranks_) && who[0] >= 1 && who[0] < static_cast<uint32_t>(nranks_);
-  return valid ? static_cast<int>(who[0]) : -1;  // -1: wrong rack size or impossible rank
+  if (!valid) return -1;  // wrong rack size or impossible rank
+  // Every rank must do its arithmetic the same way as the root. Otherwise a
+  // replacement could not reproduce exactly what the rank it replaces computed.
+  if (who[2] != static_cast<uint32_t>(kern::active())) return -2;
+  return static_cast<int>(who[0]);
 }
 
 void Mesh::adopt_rank(int r, int fd) {
@@ -112,7 +118,8 @@ void Mesh::connect_to_root(const std::string& host, int port) {
   if (fd < 0) throw std::runtime_error("cannot reach the root rank");
   Msg hello;
   hello.type = MSG_HELLO;
-  const uint32_t who[2] = {static_cast<uint32_t>(rank_), static_cast<uint32_t>(nranks_)};
+  const uint32_t who[3] = {static_cast<uint32_t>(rank_), static_cast<uint32_t>(nranks_),
+                           static_cast<uint32_t>(kern::active())};
   hello.payload.resize(sizeof who);
   std::memcpy(hello.payload.data(), who, sizeof who);
   if (!send_msg(fd, hello)) throw std::runtime_error("lost the root while saying hello");

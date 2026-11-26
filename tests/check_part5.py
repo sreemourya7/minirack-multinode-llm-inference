@@ -137,14 +137,18 @@ def main():
     print("\nB. a rank killed in the middle of a request")
     for n, victim, strategy in [(2, 1, "replay"), (3, 2, "replay"), (3, 1, "checkpoint")]:
         with rack(n, f"B_{n}_{victim}", strategy) as r, Client("127.0.0.1", r.port) as c:
-            base, _ = story(c, 1, seq32, 28)
+            # A 256-token prompt, so that the prefill lasts long enough (well over
+            # half a second even with the AVX2 kernels) to be struck 150 ms in.
+            long_story = (seq32 * 9)[:260]
+            base_long, _ = story(c, 1, long_story, 256)
             c.release(1)
-            # Strike 150 ms into a prefill that takes several hundred ms.
-            got, _ = story(c, 1, seq32, 28, before_step=lambda i: later(0.15, lambda: kill_and_replace(r, victim)) if i == 0 else None)
+            got, _ = story(c, 1, long_story, 256, before_step=lambda i: later(0.15, lambda: kill_and_replace(r, victim)) if i == 0 else None)
+            c.release(1)
+            base, _ = story(c, 1, seq32, 28)
             fail = r.lines(0, "failure rank")
             mid = bool(fail) and fail[0].get("during") == "request"
             aborted = n == 2 or any("aborted by the root" in open(r.logs[k]).read() for k in range(1, n) if k != victim)
-            check(same(base, got) and mid and aborted,
+            check(same(base_long, got) and mid and aborted,
                   f"{n} ranks, rank {victim} killed mid-prefill, {strategy}: request re-run, output bit-identical",
                   "survivor was told to abort and fell back in step" if n == 3 and aborted else
                   ("" if mid else "the kill did not land mid-request"))

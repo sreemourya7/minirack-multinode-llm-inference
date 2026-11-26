@@ -1,5 +1,7 @@
 #include "exec.h"
 
+#include "prof.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -29,15 +31,19 @@ void log_request(const Mesh& mesh, const ReqInfo& info, int T, double total_ms, 
   for (uint64_t n : st.expert_load) load += (load.empty() ? "" : ",") + std::to_string(n);
   std::fprintf(stderr,
                "[rank %d/%d] req %llu op=%s T=%d len=%d kv_kb=%.1f total_ms=%.2f compute_ms=%.2f head_ms=%.2f "
+               "matmul_ms=%.2f attention_ms=%.2f gelu_ms=%.2f norm_ms=%.2f "
                "collective_ms=%.2f collectives=%llu sent_kb=%.1f recv_kb=%.1f expert_rows=%llu expert_load=[%s]\n",
                mesh.rank(), mesh.size(), static_cast<unsigned long long>(info.request_id), op_name(info.op), T,
-               out.session_len, out.kv_bytes / 1e3, total_ms, total_ms - c.seconds * 1e3, out.head_ms, c.seconds * 1e3,
+               out.session_len, out.kv_bytes / 1e3, total_ms, total_ms - c.seconds * 1e3, out.head_ms,
+               prof::ms[prof::kMatmul], prof::ms[prof::kAttention], prof::ms[prof::kGelu], prof::ms[prof::kNorm],
+               c.seconds * 1e3,
                static_cast<unsigned long long>(c.calls), c.bytes_sent / 1e3, c.bytes_recv / 1e3,
                static_cast<unsigned long long>(st.expert_rows), load.c_str());
 }
 
 void execute(const TpShard& shard, Mesh& mesh, SessionTable& sessions, const ReqInfo& info, Mat& h, Output& out,
              TpStats& stats) {
+  prof::reset();
   const int n_layer = static_cast<int>(shard.cfg.n_layer);
   const int my_width = (shard.head_end - shard.head_begin) * static_cast<int>(shard.cfg.n_embd / shard.cfg.n_head);
 

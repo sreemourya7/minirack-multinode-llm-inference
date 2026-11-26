@@ -101,8 +101,8 @@ class Mesh {
   bool is_root() const { return rank_ == 0; }
 
   // --- membership (root) -------------------------------------------------------
-  // Which rank a HELLO message claims to be, or -1 if it is not a valid HELLO
-  // for this rack.
+  // Which rank a HELLO message claims to be; -1 if it is not a valid HELLO for
+  // this rack; -2 if it is valid but the sender uses different kernels (Part 6).
   int hello_rank(const Msg& hello) const;
   // Installs fd as the connection to rank r, which must currently be missing.
   void adopt_rank(int r, int fd);
