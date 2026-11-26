@@ -1,0 +1,301 @@
+================ Part 1 ================
+computing PyTorch reference ...
+
+split                      T    max |diff|   argmax  == 1-worker       ms
+1 worker  (0-12)           1      1.30e-04       ok            -       64
+1 worker  (0-12)           2      1.64e-04       ok            -       77
+1 worker  (0-12)           7      1.07e-04       ok            -      204
+1 worker  (0-12)          16      1.56e-04       ok            -      299
+1 worker  (0-12)          32      1.30e-04       ok            -      502
+1 worker  (0-12)           6      2.33e-04       ok            -      122
+2 workers (6 | 6)          1      1.30e-04       ok          yes       47
+2 workers (6 | 6)          2      1.64e-04       ok          yes       57
+2 workers (6 | 6)          7      1.07e-04       ok          yes      124
+2 workers (6 | 6)         16      1.56e-04       ok          yes      258
+2 workers (6 | 6)         32      1.30e-04       ok          yes      745
+2 workers (6 | 6)          6      2.33e-04       ok          yes      171
+2 workers (1 | 11)         1      1.30e-04       ok          yes       80
+2 workers (1 | 11)         2      1.64e-04       ok          yes      123
+2 workers (1 | 11)         7      1.07e-04       ok          yes      216
+2 workers (1 | 11)        16      1.56e-04       ok          yes      318
+2 workers (1 | 11)        32      1.30e-04       ok          yes      477
+2 workers (1 | 11)         6      2.33e-04       ok          yes      112
+3 workers (4 | 4 | 4)      1      1.30e-04       ok          yes       65
+3 workers (4 | 4 | 4)      2      1.64e-04       ok          yes       70
+3 workers (4 | 4 | 4)      7      1.07e-04       ok          yes      152
+3 workers (4 | 4 | 4)     16      1.56e-04       ok          yes      306
+3 workers (4 | 4 | 4)     32      1.30e-04       ok          yes      568
+3 workers (4 | 4 | 4)      6      2.33e-04       ok          yes      144
+
+PASSED: all splits match PyTorch, match each other bit for bit, and survive bad requests
+
+================ Part 2 ================
+computing PyTorch reference ...
+
+ranks     T    max |diff|   argmax  repeatable
+1         1      8.39e-05       ok         yes
+1         2      1.41e-04       ok         yes
+1         7      9.16e-05       ok         yes
+1        16      1.68e-04       ok         yes
+1        32      1.45e-04       ok         yes
+1         6      2.06e-04       ok         yes
+2         1      2.29e-05       ok         yes
+2         2      1.26e-04       ok         yes
+2         7      1.22e-04       ok         yes
+2        16      9.92e-05       ok         yes
+2        32      1.53e-04       ok         yes
+2         6      1.22e-04       ok         yes
+3         1      6.48e-05       ok         yes
+3         2      1.49e-04       ok         yes
+3         7      1.07e-04       ok         yes
+3        16      1.14e-04       ok         yes
+3        32      1.53e-04       ok         yes
+3         6      1.22e-04       ok         yes
+4         1      1.91e-05       ok         yes
+4         2      1.07e-04       ok         yes
+4         7      1.07e-04       ok         yes
+4        16      8.39e-05       ok         yes
+4        32      1.30e-04       ok         yes
+4         6      1.22e-04       ok         yes
+
+failure paths (2 ranks)
+  rank 1 corrupts its hidden state: detected (replica check failed: rank 1 holds a different hidden state)
+  rank 1 killed and not replaced, request 1: error reply (the rack is degraded: rank 1 was lost and no replacement joi...)
+  rank 1 killed and not replaced, request 2: error reply (the rack is degraded: rank 1 was lost and no replacement joi...)
+
+latency of one 32-token request (best of 5), measured on the root rank
+ranks    total ms  speedup  root compute  in collectives  kB moved  collectives
+1             273    1.00x           273               0         0            0
+2             139    1.96x           134               5      4918           27
+3             129    2.12x           100              29      9769           27
+4              99    2.75x            84              15     14603           27
+('in collectives' includes waiting for slower ranks, not only copying bytes)
+
+PASSED: every rank count matches PyTorch, is repeatable bit for bit, and survives bad requests
+
+================ Part 3 ================
+computing PyTorch references ...
+
+A. anchor: 8 experts, top-8, unit gates  ==  plain GPT-2 (Hugging Face)
+ranks     T    max |diff|   argmax
+1         1      9.16e-05       ok
+1         2      9.92e-05       ok
+1         7      1.07e-04       ok
+1        16      1.07e-04       ok
+1        32      1.30e-04       ok
+1         6      1.30e-04       ok
+2         1      9.16e-05       ok
+2         2      9.54e-05       ok
+2         7      9.92e-05       ok
+2        16      9.16e-05       ok
+2        32      1.22e-04       ok
+2         6      1.22e-04       ok
+4         1      3.05e-05       ok
+4         2      8.77e-05       ok
+4         7      9.92e-05       ok
+4        16      9.92e-05       ok
+4        32      1.14e-04       ok
+4         6      9.16e-05       ok
+
+B. MoE: 8 experts, top-2, softmax gates  ==  PyTorch MoE reference
+   closest routing call in the reference: margin 4.13e-04 (well above float noise)
+ranks     T    max |diff|   argmax  repeatable   routing  pairs run
+1         1      7.63e-06       ok         yes      same     24    
+1         2      9.16e-05       ok         yes      same     48    
+1         7      9.16e-05       ok         yes      same    168    
+1        16      7.63e-05       ok         yes      same    384    
+1        32      5.34e-05       ok         yes      same    768    
+1         6      1.07e-04       ok         yes      same    144    
+2         1      1.14e-05       ok         yes      same     24    
+2         2      4.58e-05       ok         yes      same     48    
+2         7      1.37e-04       ok         yes      same    168    
+2        16      7.63e-05       ok         yes      same    384    
+2        32      7.25e-05       ok         yes      same    768    
+2         6      9.16e-05       ok         yes      same    144    
+3         1      5.72e-06       ok         yes      same     24    
+3         2      6.87e-05       ok         yes      same     48    
+3         7      1.30e-04       ok         yes      same    168    
+3        16      7.63e-05       ok         yes      same    384    
+3        32      6.87e-05       ok         yes      same    768    
+3         6      1.22e-04       ok         yes      same    144    
+4         1      9.54e-06       ok         yes      same     24    
+4         2      4.58e-05       ok         yes      same     48    
+4         7      9.16e-05       ok         yes      same    168    
+4        16      6.10e-05       ok         yes      same    384    
+4        32      8.77e-05       ok         yes      same    768    
+4         6      1.07e-04       ok         yes      same    144    
+
+C. latency of one 32-token request (best of 5)
+model              ranks  total ms   per-rank compute ms   per-rank expert work
+dense                  1       256                   256                      -
+dense                  2       138             133 / 129                      -
+MoE top-2 of 8         1       166                   166                   100%
+MoE top-2 of 8         2       118              103 / 90              61% / 39%
+MoE vs dense on 1 rank: 1.54x faster.   MoE on 2 ranks vs 1: 1.40x.   Dense on 2 ranks vs 1: 1.86x.
+tokens routed to each expert for this request (all layers): [104, 173, 106, 89, 58, 59, 101, 78]
+
+PASSED: the anchor matches GPT-2, the MoE matches its PyTorch reference, and every routing decision agrees
+
+================ Part 4 ================
+computing PyTorch references ...
+
+A. prefill 12 tokens, then decode 12 one at a time
+model    ranks   steps == no-cache run   max |diff| vs PyTorch   argmax on rack
+dense        1  12 of 12 bit-identical                1.37e-04       same token
+dense        2  12 of 12 bit-identical                1.45e-04       same token
+dense        4  12 of 12 bit-identical                1.30e-04       same token
+MoE          2  12 of 12 bit-identical                6.10e-05       same token
+
+B. two sessions advanced in alternation (2 ranks)
+  interleaved output vs each session alone: bit-identical
+
+C. lifecycle (sessions 1 and 2 are still open)
+  decode on a session that was never opened: error reply (no such session)
+  prefill on a session id already in use: error reply (session already exists)
+  release of an unknown session: error reply (no such session)
+  prefill longer than the context window: error reply (sequence longer than the context window)
+  decode with an out-of-range token: error reply (token id out of range)
+  session 1 after all those errors: intact
+  decode after release: error reply (no such session)
+  session left open by a client that disconnected: freed by the rack
+  opening session number 65: error reply (too many open sessions)
+
+D. greedy generation, 24 new tokens (2 ranks) vs Hugging Face generate
+  tokens: identical
+  text:   "Hello, my dog is cute. I'm not sure if she's a puppy or not. I'm not sure if she's a dog or not"
+
+E. timing: 32-token prompt, then 32 decoded tokens
+model    ranks   prefill    decode  of which  in collec-  data per  same token,    cache at
+                      ms  ms/token   head ms   tives, ms  step, kB  no cache ms  64 tok, MB
+dense        1       320      40.0      13.2        0.00       0.0          517        4.72
+dense        2       165      37.0      10.7        5.46     151.0          290        4.72
+MoE          2        88      25.8       9.5        5.95     151.0          169        4.72
+
+dense, 1 rank: decoding token 65 takes 40 ms with the cache and 517 ms without (13x)
+dense, 2 ranks: prefill 194 tokens/s, decode 27.1 tokens/s; 2 ranks vs 1: prefill 1.94x, decode 1.08x
+dense, 2 ranks, shipping full logits to the root instead of picking the token on the rack: 252 kB per step, 37.8 ms/token
+
+PASSED: cached decoding is bit-identical to recomputing, sessions are isolated, and generation matches Hugging Face
+
+================ Part 5 ================
+A. rank 1 killed between two steps, two sessions open (2 ranks)
+  replay: both sessions continue bit-identically: ok  (rebuilt 20 tokens in 130 ms)
+  checkpoint: both sessions continue bit-identically: ok  (rebuilt 20 tokens in 1 ms)
+
+B. a rank killed in the middle of a request
+  2 ranks, rank 1 killed mid-prefill, replay: request re-run, output bit-identical: ok
+  2 ranks, rank 1 killed around a decode step, replay: output bit-identical: ok  (the kill landed mid-request)
+  3 ranks, rank 2 killed mid-prefill, replay: request re-run, output bit-identical: ok  (survivor was told to abort and fell back in step)
+  3 ranks, rank 2 killed around a decode step, replay: output bit-identical: ok  (the kill landed mid-request)
+  3 ranks, rank 1 killed mid-prefill, checkpoint: request re-run, output bit-identical: ok  (survivor was told to abort and fell back in step)
+  3 ranks, rank 1 killed around a decode step, checkpoint: output bit-identical: ok  (the kill landed mid-request)
+
+C. rank 1 hangs (SIGSTOP); the root's timeout is 1000 ms; a standby is waiting
+  detected by timeout, standby took over, output bit-identical: ok  (that step took 1213 ms instead of about 39)
+  the old process, once woken, found itself shut out and exited; the rack was not disturbed: ok
+
+D. rank 1 killed and nothing replaces it (the root waits 1500 ms)
+  the client gets a clear error after the wait: ok  (1507 ms: the rack is degraded: rank 1 was lost and no replacement joined within...)
+  once a replacement arrives the session carries on, bit-identical; the failed step was not half-applied: ok
+
+E. rank 1 fails three times during one generation (checkpoint, standbys)
+  output bit-identical after three failures: ok  (3 recoveries logged)
+
+F. end to end: the supervisor replaces the rank; text vs Hugging Face generate
+  24 greedy tokens identical to Hugging Face despite the kill at token 9: ok  (rank 1 is gone (killed by signal 9); its standby takes over, starting a new standby)
+    text: "Hello, my dog is cute. I'm not sure if she's a puppy or not. I'm not sure if she's a dog or not"
+
+G. Mixture-of-Experts model, rank 1 killed between steps (replay)
+  output bit-identical: ok
+
+H1. pause seen by the client on the step that hit the failure (64-token session, 2 ranks)
+replacement   state rebuilt by   normal step  that step  got a rank  rebuild
+                                          ms         ms   after, ms       ms
+cold start    replay                      39        697         299    356.5
+cold start    checkpoint                  38        316         268      1.6
+standby       replay                      40        354           0    315.7
+standby       checkpoint                  40         42           0      1.3
+
+H2. time to rebuild one session on the replacement rank, by session length (2 ranks)
+  tokens  replay, ms  checkpoint, ms  checkpoint copies, kB
+      16          78             0.6                    590
+      64         271             1.7                   2359
+     128         494             5.8                   4719
+     256         979             6.7                   9437
+     512        2186            21.7                  18874
+(saved to build/logs/part5_recovery.csv)
+
+H3. cost of checkpointing on every decode step when nothing fails (2 ranks, 32 steps)
+strategy      ms/token  data per step, kB
+replay            38.7              151.0
+checkpoint        38.6              187.8
+checkpointing adds 37 kB per step (24% more data) and the root keeps a second copy of the other ranks' cache: 37 kB per token
+
+PASSED: after every kind of failure the output is bit-identical to an undisturbed run
+
+================ Part 6 ================
+A. kernel unit tests
+  mr_kernel_test: ok  (PASSED: kernels agree with the scalar reference and are batch-invariant)
+
+B. end to end with each kernel set (2 ranks)
+  scalar: dense: ok  (max |diff| vs PyTorch 2.9e-04; cached == recomputed; greedy text == Hugging Face)
+  scalar: MoE: ok  (max |diff| vs PyTorch MoE 2.4e-04; every routing decision agrees)
+  avx2: dense: ok  (max |diff| vs PyTorch 1.5e-04; cached == recomputed; greedy text == Hugging Face)
+  avx2: MoE: ok  (max |diff| vs PyTorch MoE 1.4e-04; every routing decision agrees)
+
+C. a rank with different kernels tries to join
+  scalar rank refused by an AVX2 root, and it exits: ok  (a replacement must reproduce the lost rank's arithmetic exactly)
+
+D. microbenchmark (build/mr_bench)
+  memory read speed (one core, 512 MB buffer): 10.8 GB/s   [checksum -1.18e+04]
+  
+  matrix kernel, 768 x 3072, billions of multiply-adds per second
+  kernel            hot, 32 tokens    hot, 1 token   cold, 1 token    cold: weights read
+  scalar                      1.19            1.22            0.89              3.6 GB/s
+  scalar_blocked              1.27            1.14            1.27              5.1 GB/s
+  avx2                       11.65            7.57            3.95             15.8 GB/s
+  
+  vocabulary projection, one token (50257 x 768, 154 MB)
+  kernel                    ms          weights read
+  scalar                  51.4              3.0 GB/s
+  avx2                    10.1             15.2 GB/s
+
+E. before and after (32-token prompt, then 32 decoded tokens; all times in ms)
+  model   ranks  kernels  prefill 32  per token  decode/token   256-token prefill
+  dense       1   scalar        2206       68.9         125.8           14 tok/s
+  dense       1     avx2         255        8.0          46.0          126 tok/s
+                 speedup        8.7x                     2.7x                8.9x
+  dense       2   scalar        1112       34.8          69.0           26 tok/s
+  dense       2     avx2         134        4.2          38.9          228 tok/s
+                 speedup        8.3x                     1.8x                8.6x
+  MoE         2   scalar         592       18.5          52.2           50 tok/s
+  MoE         2     avx2          88        2.7          27.9          460 tok/s
+                 speedup        6.8x                     1.9x                9.1x
+
+  where one rank's time goes, dense, 1 rank (ms per token)
+                           matmul    head    GELU  attention  layernorm   other    total
+  prefill, scalar           65.79    1.61    1.12       0.32       0.07    0.03    68.94
+  prefill, avx2              6.36    0.34    1.09       0.07       0.07    0.03     7.97
+  decode, scalar            69.33   53.80    1.13       1.15       0.10    0.27   125.78
+  decode, avx2              28.47   14.47    1.85       0.65       0.14    0.43    46.01
+
+  compute against communication, dense, 2 ranks (ms per request)
+                            total   slowest rank computes   copying messages   the rest: waiting
+  prefill, scalar          1112.2                  1105.5         6.64 ( 1%)                 0.0
+  prefill, avx2             134.0                   127.5         6.55 ( 5%)                 0.0
+  decode, scalar             69.0                    64.9         4.06 ( 6%)                 0.0
+  decode, avx2               38.9                    32.9         5.95 (15%)                 0.0
+
+F. the memory roofline for decode (this machine reads memory at 10.8 GB/s per core)
+  model   ranks  weights read per  time just to  measured compute,  measured /
+               token per rank, MB read them, ms   slowest rank, ms    roofline
+  dense       1               495          45.9               46.0       1.00x
+  dense       2               247          22.9               32.9       1.44x
+  MoE         2               162          15.0               22.0       1.47x  (average; the split depends on routing)
+  kernel alone: 11.6 billion multiply-adds/s with the weights in cache, 3.9 when each weight is read once (15.8 GB/s)
+
+(profile saved to build/logs/part6_profile.csv)
+
+PASSED: the AVX2 kernels are correct end to end, and the measurements are above
+
+ALL CHECKS PASSED (Parts 1 to 6)

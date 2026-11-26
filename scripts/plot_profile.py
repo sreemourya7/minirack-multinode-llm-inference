@@ -41,6 +41,10 @@ def main():
                 roofline = float(r["roofline_ms"])
             rows.append(r)
 
+    def speedup(stage):
+        t = {r["kernels"]: r["total_ms"] for r in rows if r["stage"] == stage}
+        return f"{t['scalar'] / t['avx2']:.0f}" if "scalar" in t and "avx2" in t else "?"
+
     W = 760
     left, right, top = 150, 70, 104
     bar_h, row_gap, group_gap = 20, 14, 30
@@ -67,8 +71,8 @@ def main():
                              for r in rows) +
          (f" The memory roofline for decode is {roofline:.1f} ms." if roofline else "") + "</desc>",
          f'<rect width="{W}" height="{H}" fill="{SURFACE}"/>',
-         f'<text x="24" y="32" font-size="17" font-weight="600" fill="{INK}">AVX2 made prefill about 6x faster; decode '
-         f"ran into the memory roofline</text>",
+         f'<text x="24" y="32" font-size="17" font-weight="600" fill="{INK}">AVX2 made prefill about {speedup("prefill")}x '
+         f'faster and decode about {speedup("decode")}x; decode is held back by memory</text>',
          f'<text x="24" y="54" font-size="13" fill="{MUTED}">Time per token on one rank (GPT-2 small, 32-token '
          f"prompt, then 32 decoded tokens)</text>"]
 
@@ -118,7 +122,7 @@ def main():
         y0, y1 = decode_ys[0] - 8, decode_ys[-1] + bar_h + 6
         o.append(f'<line x1="{x:.1f}" y1="{y0}" x2="{x:.1f}" y2="{y1}" stroke="{INK}" stroke-width="1.5"/>')
         o.append(f'<text x="{x + 6:.1f}" y="{y0 - 6}" font-size="12" fill="{INK}">memory roofline, {roofline:.0f} ms: '
-                 f"the time just to read the weights once</text>")
+                 f"the time just to read every weight once</text>")
 
     o.append("</svg>")
     with open(args.out, "w") as f:

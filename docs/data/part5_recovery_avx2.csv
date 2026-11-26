@@ -1,6 +1,0 @@
-tokens,replay_rebuild_ms,checkpoint_rebuild_ms,checkpoint_restored_kb
-16,55.4,0.70,589.8
-64,232.4,3.60,2359.3
-128,395.1,4.60,4718.6
-256,713.7,10.60,9437.2
-512,1698.2,28.30,18874.4

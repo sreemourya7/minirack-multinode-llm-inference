@@ -68,7 +68,7 @@ recompute its cache by itself. Either the whole rack replays, or someone
 kept a copy.
 
 **11. Cold replacement versus standby.** A new process must first load its
-slice of the weights (about 210 ms here). A standby is a spare process that
+slice of the weights (270 to 300 ms here, start-up included). A standby is a spare process that
 has already done that and is waiting. Memory traded for recovery time.
 
 **12. Supervisor.** The root can repair the rack, but something outside has
@@ -106,32 +106,55 @@ history and the checkpoints. If it dies, the rack is gone.
 | A new connection is not read until it speaks | A silent connection cannot block the root | A few more lines in the event loop |
 | The replica check failing still stops the rack | With two copies that differ there is no telling which is right | No recovery from silent corruption |
 
-## Measured (2-core development machine, 2 ranks)
+## Measured (4-core laptop, Intel Core i5-10300H; 2 ranks, AVX2 kernels)
 
-The step that hit the failure, 64-token session (a normal step is 55 to 61 ms):
+The step that hit the failure, 64-token session (a normal step is 38 to 40 ms):
 
 | Replacement | State rebuilt by | That step | Waiting for a rank | Rebuilding |
 |-------------|------------------|-----------|--------------------|------------|
-| new process | replay | 1635 ms | 208 ms | 1368 ms |
-| new process | checkpoint | 274 ms | 211 ms | 1.8 ms |
-| standby | replay | 1333 ms | 0 ms | 1279 ms |
-| standby | checkpoint | 76 ms | 0 ms | 2.0 ms |
+| new process | replay | 697 ms | 299 ms | 357 ms |
+| new process | checkpoint | 316 ms | 268 ms | 1.6 ms |
+| standby | replay | 354 ms | 0 ms | 316 ms |
+| standby | checkpoint | 42 ms | 0 ms | 1.3 ms |
 
 Rebuild time by session length:
 
 | Tokens | Replay | Checkpoint |
 |--------|--------|------------|
-| 16 | 348 ms | 0.2 ms |
-| 64 | 1341 ms | 2.0 ms |
-| 128 | 2646 ms | 6.3 ms |
-| 256 | 5763 ms | 11.7 ms |
-| 512 | 11013 ms | 31.0 ms |
+| 16 | 78 ms | 0.6 ms |
+| 64 | 271 ms | 1.7 ms |
+| 128 | 494 ms | 5.8 ms |
+| 256 | 979 ms | 6.7 ms |
+| 512 | 2186 ms | 21.7 ms |
 
 What checkpointing costs when nothing fails: 188 kB per decode step instead
-of 151 kB (24% more), and 37 kB of root memory per token. Step time was 57 to
-61 ms with either strategy, so the time cost is below the noise on loopback.
+of 151 kB (24% more), and 37 kB of root memory per token. Step time was 38.7
+ms with replay and 38.6 ms with checkpoint, so no time cost was measurable.
 
-A frozen rank with a 1000 ms timeout: that step took about 1070 ms.
+A frozen rank with a 1000 ms timeout: that step took 1213 ms.
+
+Replay is a prefill, so its speed follows the kernels. These numbers are with
+the AVX2 kernels of Part 6; with the scalar kernels a prefill is about 9
+times slower on this machine, and replay would be too.
+
+## Summary
+
+`kill -9` a rank in the middle of generating text. With a standby and
+checkpointing, the client sees that token take 42 ms instead of about 40,
+gets no error, and the output is bit-identical to a run with no failure. If
+the kill lands in the middle of a step, that step is run again, so it costs
+about one extra step. Without a standby or checkpoints the same failure takes
+0.7 seconds, and replay gets worse with context length: 2.2 seconds at 512
+tokens against 22 milliseconds for checkpoint. The price of checkpointing is
+24% more bytes per step and a second copy of the cache.
+
+The points underneath that result:
+- The three sub-problems (notice, replace, rebuild) and the fast and cheap
+  answer to each.
+- Why a hang is harder than a crash, and why the timeout is a trade-off.
+- Why replay is exact (the Part 4 property), and why a rank cannot rebuild
+  its cache alone.
+- What is still unprotected: the root.
 
 ## Questions worth being able to answer
 

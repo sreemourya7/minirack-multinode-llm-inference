@@ -3,8 +3,7 @@
 
     python3 tests/check_part5.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
     python3 scripts/plot_recovery.py                      # from the run you just did
-    python3 scripts/plot_recovery.py --csv docs/data/part5_recovery_avx2.csv \
-        --scalar-csv docs/data/part5_recovery_scalar.csv  # the chart in the README
+    python3 scripts/plot_recovery.py --csv docs/data/part5_recovery.csv   # the chart in the README
 
 No plotting library needed: the chart is simple enough to write as SVG by hand.
 Lines on one linear axis: replay and checkpoint, and optionally replay as
@@ -85,7 +84,7 @@ def main():
          f'<text x="{left}" y="32" font-size="17" font-weight="600" fill="{INK}">Rebuilding a lost rank\'s cache: '
          f"replay grows with the session, checkpoint does not</text>",
          f'<text x="{left}" y="54" font-size="13" fill="{MUTED}">Time to rebuild one session on a replacement rank '
-         f"(2 ranks, GPT-2 small, 2-core machine)</text>"]
+         f"(2 ranks, GPT-2 small)</text>"]
 
     # Legend: always present for two or more series. A short line-key beside ink-coloured text.
     lx = left

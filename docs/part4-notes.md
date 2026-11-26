@@ -67,7 +67,7 @@ Each rank finds the best token in its own vocabulary slice and sends just
 
 **13. Prefill and decode are different workloads.** Prefill: many tokens per
 request, big matrices, throughput matters. Decode: one token per request,
-tiny messages, latency matters. Here a decoded token cost about 2.6x a
+tiny messages, latency matters. Here a decoded token cost about 4x a
 prefill token.
 
 **14. Resource limits and cleanup.** State that clients create must be
@@ -90,30 +90,33 @@ connection closes the rack frees whatever it left open.
 | Fixed limit of 64 sessions | Bounded memory | A real server would size this from available memory |
 | Cache grows as tokens arrive | No memory wasted on short conversations | Occasional reallocation as it grows |
 
-## Measured (2-core development machine)
+## Measured (4-core laptop, Intel Core i5-10300H)
 
 32-token prompt, then 32 decoded tokens:
 
 | Model | Ranks | Prefill | Decode per token | of which head | In collectives | Data per step | Same token, no cache |
 |-------|-------|---------|------------------|---------------|----------------|---------------|----------------------|
-| Dense | 1 | 1323 ms | 105 ms | 33 ms | 0 ms | 0 kB | 2383 ms |
-| Dense | 2 | 767 ms | 55 ms | 17 ms | 3.6 ms | 151 kB | 1261 ms |
-| MoE top-2 of 8 | 2 | 365 ms | 41 ms | 17 ms | 4.3 ms | 151 kB | 776 ms |
+| Dense | 1 | 320 ms | 40.0 ms | 13.2 ms | 0 ms | 0 kB | 517 ms |
+| Dense | 2 | 165 ms | 37.0 ms | 10.7 ms | 5.5 ms | 151 kB | 290 ms |
+| MoE top-2 of 8 | 2 | 88 ms | 25.8 ms | 9.5 ms | 6.0 ms | 151 kB | 169 ms |
 
 Cache size: 64 tokens x 768 floats x 4 bytes x 2 (key and value) x 12 layers
 = 4.7 MB per session, summed over all ranks.
 
-Two things the numbers show that are worth understanding:
+Three things the numbers show that are worth understanding:
 
-- **Without the cache, cost grows with length.** Token 65 costs 2.4 s
-  because all 64 earlier tokens are re-run. With the cache it costs 105 ms,
+- **Without the cache, cost grows with length.** Token 65 costs 517 ms
+  because all 64 earlier tokens are re-run. With the cache it costs 40 ms,
   the same as token 2.
-- **A decoded token is more expensive than a prefill token** (105 ms against
-  about 40 ms), although it is the same arithmetic. The likely reason is
-  memory, not arithmetic: one decoded token has to read every weight in the
-  model once (498 MB), straight from main memory, whereas in prefill each
-  weight matrix is used for 32 tokens in a row while it is still in the CPU
-  cache. This is a hypothesis until Part 6 measures it.
+- **A decoded token is more expensive than a prefill token** (40 ms against
+  10 ms), although it is the same arithmetic. The reason is memory, not
+  arithmetic: one decoded token has to read every weight in the model once
+  (495 MB), straight from main memory, whereas in prefill each weight matrix
+  is used for many tokens in a row while it is still in the CPU cache. Part 6
+  measures this directly.
+- **A second rank nearly halves prefill (320 to 165 ms) but barely moves
+  decode (40.0 to 37.0 ms).** Part 6 shows why: ranks on one machine share
+  its memory, and decode is limited by memory.
 
 ## Questions worth being able to answer
 

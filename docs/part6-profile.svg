@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 298" width="760" height="298" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 <title>Time per token before and after the AVX2 kernels, by where it goes</title>
-<desc>Prefill with scalar kernels: 37.9 ms per token. Prefill with avx2 kernels: 6.3 ms per token. Decode with scalar kernels: 108.1 ms per token. Decode with avx2 kernels: 40.0 ms per token. The memory roofline for decode is 36.3 ms.</desc>
+<desc>Prefill with scalar kernels: 70.2 ms per token. Prefill with avx2 kernels: 8.0 ms per token. Decode with scalar kernels: 125.7 ms per token. Decode with avx2 kernels: 43.9 ms per token. The memory roofline for decode is 31.4 ms.</desc>
 <rect width="760" height="298" fill="#ffffff"/>
-<text x="24" y="32" font-size="17" font-weight="600" fill="#191919">AVX2 made prefill about 6x faster; decode ran into the memory roofline</text>
+<text x="24" y="32" font-size="17" font-weight="600" fill="#191919">AVX2 made prefill about 9x faster and decode about 3x; decode is held back by memory</text>
 <text x="24" y="54" font-size="13" fill="#666666">Time per token on one rank (GPT-2 small, 32-token prompt, then 32 decoded tokens)</text>
 <rect x="24" y="68" width="12" height="12" rx="3" fill="#257de0"/>
 <text x="42" y="78" font-size="12" fill="#191919">Matrix multiplies</text>
@@ -12,39 +12,41 @@
 <text x="364.79999999999995" y="78" font-size="12" fill="#191919">Everything else</text>
 <line x1="150.0" y1="96" x2="150.0" y2="252" stroke="#e6e6e6" stroke-width="1"/>
 <text x="150.0" y="270" font-size="12" fill="#666666" text-anchor="middle">0</text>
-<line x1="240.0" y1="96" x2="240.0" y2="252" stroke="#e6e6e6" stroke-width="1"/>
-<text x="240.0" y="270" font-size="12" fill="#666666" text-anchor="middle">20</text>
-<line x1="330.0" y1="96" x2="330.0" y2="252" stroke="#e6e6e6" stroke-width="1"/>
-<text x="330.0" y="270" font-size="12" fill="#666666" text-anchor="middle">40</text>
-<line x1="420.0" y1="96" x2="420.0" y2="252" stroke="#e6e6e6" stroke-width="1"/>
-<text x="420.0" y="270" font-size="12" fill="#666666" text-anchor="middle">60</text>
-<line x1="510.0" y1="96" x2="510.0" y2="252" stroke="#e6e6e6" stroke-width="1"/>
-<text x="510.0" y="270" font-size="12" fill="#666666" text-anchor="middle">80</text>
-<line x1="600.0" y1="96" x2="600.0" y2="252" stroke="#e6e6e6" stroke-width="1"/>
-<text x="600.0" y="270" font-size="12" fill="#666666" text-anchor="middle">100</text>
+<line x1="227.1" y1="96" x2="227.1" y2="252" stroke="#e6e6e6" stroke-width="1"/>
+<text x="227.1" y="270" font-size="12" fill="#666666" text-anchor="middle">20</text>
+<line x1="304.3" y1="96" x2="304.3" y2="252" stroke="#e6e6e6" stroke-width="1"/>
+<text x="304.3" y="270" font-size="12" fill="#666666" text-anchor="middle">40</text>
+<line x1="381.4" y1="96" x2="381.4" y2="252" stroke="#e6e6e6" stroke-width="1"/>
+<text x="381.4" y="270" font-size="12" fill="#666666" text-anchor="middle">60</text>
+<line x1="458.6" y1="96" x2="458.6" y2="252" stroke="#e6e6e6" stroke-width="1"/>
+<text x="458.6" y="270" font-size="12" fill="#666666" text-anchor="middle">80</text>
+<line x1="535.7" y1="96" x2="535.7" y2="252" stroke="#e6e6e6" stroke-width="1"/>
+<text x="535.7" y="270" font-size="12" fill="#666666" text-anchor="middle">100</text>
+<line x1="612.9" y1="96" x2="612.9" y2="252" stroke="#e6e6e6" stroke-width="1"/>
+<text x="612.9" y="270" font-size="12" fill="#666666" text-anchor="middle">120</text>
 <line x1="690.0" y1="96" x2="690.0" y2="252" stroke="#e6e6e6" stroke-width="1"/>
-<text x="690.0" y="270" font-size="12" fill="#666666" text-anchor="middle">120</text>
+<text x="690.0" y="270" font-size="12" fill="#666666" text-anchor="middle">140</text>
 <text x="420.0" y="290" font-size="12" fill="#666666" text-anchor="middle">milliseconds per token</text>
 <text x="138" y="118.0" font-size="13" fill="#191919" text-anchor="end">Prefill, scalar</text>
-<rect x="150.0" y="104" width="158.8" height="20" fill="#257de0"><title>Matrix multiplies: 35.7 ms</title></rect>
-<rect x="310.8" y="104" width="2.4" height="20" fill="#f47230"><title>Vocabulary projection: 1.0 ms</title></rect>
-<rect x="315.3" y="104" width="5.3" height="20" fill="#00b894"><title>Everything else: 1.2 ms</title></rect>
-<text x="328.6" y="118.0" font-size="13" font-weight="600" fill="#191919">37.9 ms</text>
+<rect x="150.0" y="104" width="256.0" height="20" fill="#257de0"><title>Matrix multiplies: 66.9 ms</title></rect>
+<rect x="408.0" y="104" width="4.7" height="20" fill="#f47230"><title>Vocabulary projection: 1.7 ms</title></rect>
+<rect x="414.7" y="104" width="6.0" height="20" fill="#00b894"><title>Everything else: 1.6 ms</title></rect>
+<text x="428.7" y="118.0" font-size="13" font-weight="600" fill="#191919">70.2 ms</text>
 <text x="138" y="152.0" font-size="13" fill="#191919" text-anchor="end">Prefill, avx2</text>
-<rect x="150.0" y="138" width="20.3" height="20" fill="#257de0"><title>Matrix multiplies: 5.0 ms</title></rect>
-<rect x="172.3" y="138" width="0.8" height="20" fill="#f47230"><title>Vocabulary projection: 0.4 ms</title></rect>
-<rect x="174.2" y="138" width="4.2" height="20" fill="#00b894"><title>Everything else: 0.9 ms</title></rect>
-<text x="186.4" y="152.0" font-size="13" font-weight="600" fill="#191919">6.3 ms</text>
+<rect x="150.0" y="138" width="22.7" height="20" fill="#257de0"><title>Matrix multiplies: 6.4 ms</title></rect>
+<rect x="174.7" y="138" width="0.8" height="20" fill="#f47230"><title>Vocabulary projection: 0.3 ms</title></rect>
+<rect x="176.0" y="138" width="4.9" height="20" fill="#00b894"><title>Everything else: 1.3 ms</title></rect>
+<text x="188.9" y="152.0" font-size="13" font-weight="600" fill="#191919">8.0 ms</text>
 <text x="138" y="202.0" font-size="13" fill="#191919" text-anchor="end">Decode, scalar</text>
-<rect x="150.0" y="188" width="316.6" height="20" fill="#257de0"><title>Matrix multiplies: 70.8 ms</title></rect>
-<rect x="468.6" y="188" width="154.9" height="20" fill="#f47230"><title>Vocabulary projection: 34.9 ms</title></rect>
-<path d="M625.5 188 h6.8 a4 4 0 0 1 4 4 v12 a4 4 0 0 1 -4 4 h-6.8 z" fill="#00b894"><title>Everything else: 2.4 ms</title></path>
-<text x="644.3" y="202.0" font-size="13" font-weight="600" fill="#191919">108.1 ms</text>
+<rect x="150.0" y="188" width="267.9" height="20" fill="#257de0"><title>Matrix multiplies: 70.0 ms</title></rect>
+<rect x="419.9" y="188" width="202.3" height="20" fill="#f47230"><title>Vocabulary projection: 53.0 ms</title></rect>
+<path d="M624.2 188 h6.7 a4 4 0 0 1 4 4 v12 a4 4 0 0 1 -4 4 h-6.7 z" fill="#00b894"><title>Everything else: 2.8 ms</title></path>
+<text x="643.0" y="202.0" font-size="13" font-weight="600" fill="#191919">125.7 ms</text>
 <text x="138" y="236.0" font-size="13" fill="#191919" text-anchor="end">Decode, avx2</text>
-<rect x="150.0" y="222" width="109.4" height="20" fill="#257de0"><title>Matrix multiplies: 24.7 ms</title></rect>
-<rect x="261.4" y="222" width="58.6" height="20" fill="#f47230"><title>Vocabulary projection: 13.5 ms</title></rect>
-<rect x="322.0" y="222" width="7.9" height="20" fill="#00b894"><title>Everything else: 1.8 ms</title></rect>
-<text x="337.9" y="236.0" font-size="13" font-weight="600" fill="#191919">40.0 ms</text>
-<line x1="313.5" y1="180" x2="313.5" y2="248" stroke="#191919" stroke-width="1.5"/>
-<text x="319.5" y="174" font-size="12" fill="#191919">memory roofline, 36 ms: the time just to read the weights once</text>
+<rect x="150.0" y="222" width="103.6" height="20" fill="#257de0"><title>Matrix multiplies: 27.4 ms</title></rect>
+<rect x="255.6" y="222" width="50.5" height="20" fill="#f47230"><title>Vocabulary projection: 13.6 ms</title></rect>
+<path d="M308.1 222 h7.0 a4 4 0 0 1 4 4 v12 a4 4 0 0 1 -4 4 h-7.0 z" fill="#00b894"><title>Everything else: 2.9 ms</title></path>
+<text x="327.2" y="236.0" font-size="13" font-weight="600" fill="#191919">43.9 ms</text>
+<line x1="271.1" y1="180" x2="271.1" y2="248" stroke="#191919" stroke-width="1.5"/>
+<text x="277.1" y="174" font-size="12" fill="#191919">memory roofline, 31 ms: the time just to read every weight once</text>
 </svg>

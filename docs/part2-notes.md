@@ -66,7 +66,8 @@ rank computes its part with no bias (`matmul`), and the bias is added after
 the all-reduce.
 
 **13. Oversubscription.** More ranks than CPU cores means ranks share cores.
-On the 2-core test machine, 2 ranks gave 1.96x and 4 ranks gave no more.
+On a 2-core machine, 4 ranks are no faster than 2. The laptop these results
+come from has 4 cores: 2 ranks gave 1.96x and 4 ranks gave 2.75x.
 
 ## Decisions
 
@@ -84,17 +85,23 @@ On the 2-core test machine, 2 ranks gave 1.96x and 4 ranks gave no more.
 | A fault-injection hook (`MR_TEST_CORRUPT_RANK`) | A check that has never been seen to fail is not verified | A few lines of test-only code in the binary |
 | Keep Part 1's pipeline worker as a separate binary | Each stays readable; the two splits are different ideas | Some duplicated setup code |
 
-## Measured (2-core development machine, 32-token request)
+## Measured (4-core laptop, Intel Core i5-10300H; 32-token request)
 
 | Ranks | Latency | Speedup | In collectives (root) | Data through the root |
 |-------|---------|---------|-----------------------|-----------------------|
-| 1 | 1168 ms | 1.00x | 0 ms | 0 MB |
-| 2 | 596 ms | 1.96x | 13 ms | 4.9 MB |
-| 4 | 596 ms | 1.96x | 50 ms | 14.6 MB |
+| 1 | 273 ms | 1.00x | 0 ms | 0 MB |
+| 2 | 139 ms | 1.96x | 5 ms | 4.9 MB |
+| 3 | 129 ms | 2.12x | 29 ms | 9.8 MB |
+| 4 | 99 ms | 2.75x | 15 ms | 14.6 MB |
 
 Where the 4.9 MB comes from: each all-reduce moves one `[32, 768]` matrix to
 the root and one back, 98 KB each way. 24 all-reduces x 2 x 98 KB = 4.7 MB,
 plus the broadcast and the gather.
+
+Four ranks on four cores give 2.75x, not 4x. The causes are not separated
+here. Candidates: every message passes through the root, a laptop lowers its
+clock speed when all cores are busy, and the ranks share one memory system
+(Part 6 measures that last one).
 
 ## Questions worth being able to answer
 
@@ -105,6 +112,6 @@ plus the broadcast and the gather.
 - How many collectives does one request need, and what are they?
 - Data through the root grows with the number of ranks. Why, and what wiring
   would avoid it?
-- On this machine communication is about 2% of the time. What would make it a
+- On this machine communication is about 4% of the time. What would make it a
   much larger share? (Hint: think about very short requests, such as decoding
   one token at a time, and about real networks instead of loopback.)

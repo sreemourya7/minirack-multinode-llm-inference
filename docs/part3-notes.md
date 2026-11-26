@@ -58,8 +58,8 @@ Rank 0's four experts got 61% of the work.
 
 **10. The slowest rank sets the pace.** An all-reduce cannot finish until
 every rank has sent its part. So the rank with the most work decides the
-latency, and the others wait. This is why MoE on 2 ranks was 1.78x faster
-than on 1, while dense reached about 1.9x.
+latency, and the others wait. This is why MoE on 2 ranks was 1.40x faster
+than on 1, while dense reached 1.86x.
 
 **11. Anchor test.** A special case with a known answer. With all 8 experts
 chosen and every gate equal to 1, the MoE layer is exactly GPT-2's MLP. So
@@ -85,24 +85,29 @@ request. Too many means an expert ran twice; too few means one was skipped.
 | PyTorch reference computes densely and masks | The opposite method to the C++ (which skips unchosen experts); two routes to the same numbers | The reference is our own code, which is why the anchor test also exists |
 | Fix the router seed by its routing margin | Keeps the comparison stable across machines | The test covers one router, not many |
 
-## Measured (2-core development machine, 32-token request)
+## Measured (4-core laptop, Intel Core i5-10300H; 32-token request)
 
 | Model | Ranks | Latency | Compute per rank | Expert work per rank |
 |-------|-------|---------|------------------|----------------------|
-| Dense | 1 | 1195 ms | 1195 ms | - |
-| Dense | 2 | 606 ms | 586 / 598 ms | - |
-| MoE top-2 of 8 | 1 | 635 ms | 635 ms | 100% |
-| MoE top-2 of 8 | 2 | 356 ms | 337 / 287 ms | 61% / 39% |
+| Dense | 1 | 256 ms | 256 ms | - |
+| Dense | 2 | 138 ms | 133 / 129 ms | - |
+| MoE top-2 of 8 | 1 | 166 ms | 166 ms | 100% |
+| MoE top-2 of 8 | 2 | 118 ms | 103 / 90 ms | 61% / 39% |
 
-Why MoE is about 2x and not 4x faster than dense: only the MLP shrinks. Per
+Why MoE is 1.5x and not 4x faster than dense: only the MLP shrinks. Per
 token, a dense layer does about 2.4M multiply-adds in attention's matrices
 and 4.7M in the MLP. Cutting the MLP to a quarter leaves 2.4M + 1.2M = 3.6M,
-which is about half of 7.1M.
+which is about half of 7.1M. So the arithmetic alone would give about 2x, and
+with the slower scalar kernels that is roughly what is measured (1.8x, in the
+Part 6 table). With the AVX2 kernels the matrix multiplies are fast enough
+that what MoE does not shrink (the vocabulary projection, GELU, routing, and
+gathering and scattering tokens) is a larger share, and the gain is 1.54x.
 
 ## Questions worth being able to answer
 
 - What are the four steps of an MoE layer for one token?
-- Why is MoE about 2x faster than dense here, not 4x?
+- Why is MoE about 1.5x faster than dense here, when it does a quarter of the
+  MLP's work?
 - Why do the ranks not need to send each other the routing decisions? What
   would break that?
 - Why did 2 ranks give less speedup for MoE than for dense?
