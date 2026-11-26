@@ -4,7 +4,8 @@
 // Most lines are local work. A few lines are "collectives": points where all
 // ranks stop, exchange data, and continue with a shared result.
 //
-//   start_request   root gives every rank the same input          (a broadcast)
+//   start_request   root tells every rank what to do and gives it
+//                   the same input                                 (a broadcast)
 //   all_reduce_sum  every rank puts in a matrix; every rank gets
 //                   back the SUM of all of them
 //   gather_cols     every rank puts in some columns; the root gets
@@ -35,6 +36,23 @@
 
 namespace mr {
 
+// What a request asks the rack to do (Part 4 added everything but OP_FORWARD).
+enum Op : uint32_t {
+  OP_FORWARD = 0,  // stateless: run a whole sequence, keep nothing
+  OP_PREFILL = 1,  // create a session and fill its KV cache from a prompt
+  OP_DECODE = 2,   // extend a session by one token
+  OP_RELEASE = 3,  // free a session
+};
+
+// Sent by the root to every rank at the start of a request.
+struct ReqInfo {
+  uint64_t request_id = 0;
+  uint32_t flags = 0;
+  uint32_t op = OP_FORWARD;
+  uint64_t session = 0;
+  uint32_t pos = 0;  // decode: the session length the root expects every rank to have
+};
+
 struct CommStats {
   uint64_t calls = 0;       // number of collectives
   uint64_t bytes_sent = 0;  // payload bytes
@@ -61,9 +79,9 @@ class Mesh {
 
   // --- request boundaries ----------------------------------------------------
   // Root only: start a request on every rank, handing each the embedded input.
-  void start_request(uint64_t request_id, uint32_t flags, const Mat& h0);
+  void start_request(const ReqInfo& info, const Mat& h0);
   // Other ranks: block until the root starts a request. False if the root is gone.
-  bool wait_request(uint64_t& request_id, uint32_t& flags, Mat& h0);
+  bool wait_request(ReqInfo& info, Mat& h0);
 
   // --- collectives (every rank must call the same ones in the same order) -----
   void all_reduce_sum(Mat& m);                     // in: my part.  out: the sum

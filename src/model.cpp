@@ -53,17 +53,17 @@ Mat embed(const Shard& s, const std::vector<int32_t>& ids) {
   return embed_tokens(s.cfg, s.wte, s.wpe, ids);
 }
 
-Mat embed_tokens(const ModelConfig& cfg, const Mat& wte, const Mat& wpe, const std::vector<int32_t>& ids) {
+Mat embed_tokens(const ModelConfig& cfg, const Mat& wte, const Mat& wpe, const std::vector<int32_t>& ids, int pos0) {
   const int T = static_cast<int>(ids.size());
   const int D = static_cast<int>(cfg.n_embd);
   if (T == 0) throw std::runtime_error("empty token sequence");
-  if (T > static_cast<int>(cfg.n_ctx)) throw std::runtime_error("sequence longer than the context window");
+  if (pos0 < 0 || pos0 + T > static_cast<int>(cfg.n_ctx)) throw std::runtime_error("sequence longer than the context window");
   Mat h(T, D);
   for (int t = 0; t < T; ++t) {
     const int32_t id = ids[t];
     if (id < 0 || id >= static_cast<int32_t>(cfg.vocab_size)) throw std::runtime_error("token id out of range");
     const float* te = wte.row(id);
-    const float* pe = wpe.row(t);
+    const float* pe = wpe.row(pos0 + t);
     float* ht = h.row(t);
     for (int d = 0; d < D; ++d) ht[d] = te[d] + pe[d];
   }

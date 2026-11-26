@@ -95,6 +95,8 @@ class TpRack:
                     row = {k: float(v) for k, v in re.findall(r"(\w+)=([\d.]+)", line)}
                     load = re.search(r"expert_load=\[([\d,]*)\]", line)
                     row["expert_load"] = [int(x) for x in load.group(1).split(",")] if load and load.group(1) else []
+                    op = re.search(r"op=(\w+)", line)
+                    row["op"] = op.group(1) if op else "forward"
                     rows.append(row)
         return rows
 

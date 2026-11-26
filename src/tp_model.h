@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "kv_cache.h"
 #include "mat.h"
 #include "mesh.h"
 #include "moe.h"
@@ -79,7 +80,11 @@ TpShard load_tp_shard(WeightFile& wf, int rank, int nranks, WeightFile* moe = nu
 
 // Runs all layers on h. Every rank calls this with the same h and ends with
 // the same h. Two all-reduces per layer.
-void tp_forward(const TpShard& s, Mesh& mesh, Mat& h, TpStats* stats = nullptr);
+//
+// With a session (Part 4), h holds only the NEW tokens. Their keys and values
+// are appended to the session's KV cache and attention looks back over the
+// cache. Without one, h is a whole sequence and nothing is kept.
+void tp_forward(const TpShard& s, Mesh& mesh, Mat& h, TpStats* stats = nullptr, Session* session = nullptr);
 
 // Final layernorm, then logits for MY slice of the vocabulary only.
 Mat tp_head_local(const TpShard& s, const Mat& h, bool last_only);

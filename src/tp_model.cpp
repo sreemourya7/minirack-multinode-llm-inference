@@ -137,15 +137,17 @@ TpShard load_tp_shard(WeightFile& wf, int rank, int nranks, WeightFile* moe) {
   return s;
 }
 
-void tp_forward(const TpShard& s, Mesh& mesh, Mat& h, TpStats* stats) {
+void tp_forward(const TpShard& s, Mesh& mesh, Mat& h, TpStats* stats, Session* session) {
   const int my_heads = s.head_end - s.head_begin;
   if (stats && s.moe.enabled) stats->expert_load.assign(static_cast<size_t>(s.moe.n_expert), 0);
-  for (const TpBlock& b : s.blocks) {
+  for (size_t l = 0; l < s.blocks.size(); ++l) {
+    const TpBlock& b = s.blocks[l];
     // --- attention half ---
     {
       Mat x = layernorm(h, b.ln1_g, b.ln1_b, 1e-5f);     // same on every rank
       Mat qkv = linear(x, b.qkv_w, b.qkv_b);             // q, k, v for MY heads only
-      Mat a = causal_self_attention(qkv, my_heads);      // [T, L]
+      Mat a = session ? attend_cached(qkv, my_heads, session->layers[l], session->len)  // look back over the cache
+                      : causal_self_attention(qkv, my_heads);                           // [T, L]
       Mat y = matmul(a, b.aproj_w);                      // MY heads' share of the output, [T, D]
       mesh.all_reduce_sum(y);                            // now y is the sum over ALL heads
       add_row_inplace(y, b.aproj_b);
@@ -173,6 +175,7 @@ void tp_forward(const TpShard& s, Mesh& mesh, Mat& h, TpStats* stats) {
       add_inplace(h, y);
     }
   }
+  if (session) session->len += h.rows;  // every layer has now stored these tokens
 }
 
 Mat tp_head_local(const TpShard& s, const Mat& h, bool last_only) {

@@ -16,7 +16,7 @@ goes) at a size that fits on a laptop.
 | 1 | GPT-2 forward pass in C++, split layer-wise across worker processes, verified against PyTorch | done |
 | 2 | Collectives (broadcast, all-reduce, gather) and tensor parallelism: every rank works on every layer at once | done |
 | 3 | A Mixture-of-Experts layer with experts sharded across ranks and per-token routing | done |
-| 4 | KV cache, separate prefill and decode paths, per-request state | planned |
+| 4 | KV cache, separate prefill and decode paths, per-request state | done |
 | 5 | Failure detection and recovery when a rank dies mid-generation | planned |
 | 6 | AVX2 kernels for the hot paths, and a profile of compute versus communication | planned |
 
@@ -55,6 +55,18 @@ units) with a random, untrained router. It does not produce sensible text. It
 exists to build and test the runtime side of MoE: routing, running only the
 chosen experts, and the uneven load that results.
 
+**Part 4, KV cache (`prefill` / `decode` / `release`).** Each token's keys and
+values are computed once and kept, so a new token costs one token of work
+instead of re-running the whole text. Each rank keeps the cache for its own
+attention heads.
+
+```
+ prefill "Hello, my dog is"  --> run 4 tokens once, store their keys and values (a session)
+ decode  " cute"             --> run 1 token: append its key and value, attend over the 5 stored
+ decode  "."                 --> run 1 token: append, attend over the 6 stored
+ release                     --> free the session on every rank
+```
+
 ## Requirements
 
 - Linux (on Windows, use WSL2). The networking code uses POSIX sockets.
@@ -72,6 +84,10 @@ cmake -S . -B build && cmake --build build -j
 mkdir -p weights/gpt2 && cd weights/gpt2
 curl -LO https://huggingface.co/openai-community/gpt2/resolve/main/config.json
 curl -LO https://huggingface.co/openai-community/gpt2/resolve/main/model.safetensors
+# optional, only for scripts/generate.py (text in, text out):
+for f in vocab.json merges.txt tokenizer.json; do
+  curl -LO https://huggingface.co/openai-community/gpt2/resolve/main/$f
+done
 cd ../..
 python3 scripts/export_weights.py --safetensors weights/gpt2/model.safetensors \
     --config weights/gpt2/config.json --out weights/gpt2.mrkw
@@ -80,6 +96,7 @@ python3 scripts/export_weights.py --safetensors weights/gpt2/model.safetensors \
 python3 tests/check_part1.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part2.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 python3 tests/check_part3.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
+python3 tests/check_part4.py --weights weights/gpt2.mrkw --hf-dir weights/gpt2
 
 # Or run a rack by hand
 scripts/run_local.sh weights/gpt2.mrkw        # Part 1: 2-worker pipeline
@@ -88,6 +105,9 @@ scripts/run_local_tp.sh weights/gpt2.mrkw 2   # Part 2: 2 tensor-parallel ranks
 # Part 3: make an MoE file (8 experts, top-2), then run 2 ranks with it
 python3 scripts/make_moe.py --base weights/gpt2.mrkw --experts 8 --top-k 2 --seed 8 --out weights/moe8.mrkw
 scripts/run_local_tp.sh weights/gpt2.mrkw 2 weights/moe8.mrkw
+
+# Part 4: with a (dense) rack running, generate text from another terminal
+python3 scripts/generate.py --hf-dir weights/gpt2 --prompt "Hello, my dog is cute" --tokens 30
 ```
 
 ## Results
@@ -186,6 +206,49 @@ experts are assigned to ranks as fixed contiguous ranges rather than by load,
 and each rank still sends a full-size matrix to the all-reduce even when most
 of its rows are zero.
 
+### Part 4: KV cache
+
+| Check | Result |
+|-------|--------|
+| Prefill + 12 decode steps vs re-running with no cache (dense on 1, 2, 4 ranks; MoE on 2) | bit-identical at every step |
+| The same logits vs PyTorch | largest difference 2.9e-4 |
+| Two sessions advanced in alternation vs each alone | bit-identical |
+| Wrong uses (unknown session, duplicate id, bad token, too long, use after release) | error reply; the open session is left intact |
+| Client disconnects without releasing | the rack frees its sessions on every rank |
+| Session limit (64) | enforced |
+| 24 greedy tokens vs Hugging Face `generate` | identical tokens |
+
+Timing for a 32-token prompt followed by 32 decoded tokens (two runs; the
+table shows the second):
+
+| Model | Ranks | Prefill | Decode per token | of which head | In collectives | Data per step | Same token, no cache |
+|-------|-------|---------|------------------|---------------|----------------|---------------|----------------------|
+| Dense | 1 | 1323 ms | 105 ms | 33 ms | 0 ms | 0 kB | 2383 ms |
+| Dense | 2 | 767 ms | 55 ms | 17 ms | 3.6 ms | 151 kB | 1261 ms |
+| MoE top-2 of 8 | 2 | 365 ms | 41 ms | 17 ms | 4.3 ms | 151 kB | 776 ms |
+
+How to read this:
+
+- The cache makes token 65 about 23x to 25x cheaper on one rank (105 ms
+  instead of about 2.4 s), and the gap widens with every token generated.
+- A session of 64 tokens holds 4.7 MB of keys and values in total, split
+  across the ranks by attention head.
+- A decoded token costs about 2.6x what a prefill token costs (105 ms against
+  about 40 ms). The likely reason, to be confirmed by the Part 6 profile: in
+  prefill each weight matrix is reused for all 32 tokens while it sits in the
+  CPU cache, but a single decoded token has to pull all 498 MB of weights
+  from main memory once.
+- Communication is 4% to 7% of a dense decode step and about 10% for MoE, up
+  from about 2% in the Part 2 prefill-style request. The messages are small
+  (27 collectives of about 3 kB each way) but the compute per step is small
+  too.
+- Picking the next token on the rack sends 8 bytes per rank instead of that
+  rank's slice of the logits: 151 kB per step instead of 252 kB. On loopback
+  the time was the same within noise (55 to 56 ms per token).
+- Prefill on 2 ranks was 641 ms in one run and 767 ms in the other. It is a
+  single measurement per run and should be read as roughly 1.7x to 2.0x
+  faster than one rank.
+
 Known limits overall: the code is a deliberately plain baseline (speed
 is Part 6), and a lost rank takes the rack down until it is restarted
 (recovery is Part 5).
@@ -202,8 +265,9 @@ src/worker.cpp     Part 1 process: one stage of the pipeline
 src/mesh.*         Part 2 collectives: broadcast, all-reduce, gather, replica check
 src/tp_model.*     Part 2 shard: a slice of every layer
 src/moe.*          Part 3 router, top-k, gates, and sparse expert execution
-src/rank.cpp       Part 2-3 process: one tensor-parallel rank
-scripts/           weight export, MoE file generator, Python client, local launchers
+src/kv_cache.*     Part 4 sessions, the KV cache, and attention that uses it
+src/rank.cpp       Part 2-4 process: one tensor-parallel rank
+scripts/           weight export, MoE file generator, Python client, text generation demo, local launchers
 tests/             correctness checks against PyTorch
 docs/              per-part notes: concepts used and decisions taken
 ```

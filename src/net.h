@@ -36,10 +36,18 @@ enum MsgType : uint32_t {
   MSG_COLL = 7,    // data inside a collective.  payload: a matrix, or 8 bytes of checksum
   MSG_PING = 8,    // client -> root: are you ready?
   MSG_PONG = 9,    // root -> client: yes
+
+  // --- Part 4: sessions with a KV cache (see kv_cache.h) ---
+  MSG_PREFILL = 10,  // client -> root. payload: u64 session, u32 n, n int32 token ids
+  MSG_DECODE = 11,   // client -> root. payload: u64 session, int32 token
+  MSG_RELEASE = 12,  // client -> root. payload: u64 session
+  MSG_TOKEN = 13,    // reply when FLAG_ARGMAX is set. payload: int32 token, float32 its logit
+  MSG_OK = 14,       // reply to MSG_RELEASE
 };
 
 enum : uint32_t {
   FLAG_LAST_ONLY = 1u << 0,  // only return logits for the final token
+  FLAG_ARGMAX = 1u << 1,     // pick the best next token on the rack; reply with MSG_TOKEN, not logits
 };
 
 struct Msg {

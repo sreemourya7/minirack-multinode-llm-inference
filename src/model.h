@@ -43,7 +43,10 @@ Shard load_shard(WeightFile& wf, int first_layer, int last_layer, bool has_embed
 Mat embed(const Shard& s, const std::vector<int32_t>& ids);
 
 // The same lookup, given the two tables directly (used by the Part 2 ranks).
-Mat embed_tokens(const ModelConfig& cfg, const Mat& wte, const Mat& wpe, const std::vector<int32_t>& ids);
+// pos0 is the position of the first token: 0 for a fresh sequence, or the
+// current length of a session when decoding one more token (Part 4).
+Mat embed_tokens(const ModelConfig& cfg, const Mat& wte, const Mat& wpe, const std::vector<int32_t>& ids,
+                 int pos0 = 0);
 
 // Runs this shard's blocks in place on h ([T, D]).
 void run_blocks(const Shard& s, Mat& h);

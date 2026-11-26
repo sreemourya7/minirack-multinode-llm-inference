@@ -102,30 +102,49 @@ Mat Mesh::recv_mat(int fd) {
   return decode_mat(msg.payload);
 }
 
-void Mesh::start_request(uint64_t request_id, uint32_t flags, const Mat& h0) {
+namespace {
+// Fixed-size part of a MSG_START payload; the input matrix follows it.
+struct StartPrefix {
+  uint32_t op;
+  uint32_t pos;
+  uint64_t session;
+};
+static_assert(sizeof(StartPrefix) == 16, "StartPrefix must be 16 bytes");
+}  // namespace
+
+void Mesh::start_request(const ReqInfo& info, const Mat& h0) {
   if (!is_root()) throw std::runtime_error("only the root starts requests");
-  request_id_ = request_id;
+  request_id_ = info.request_id;
   seq_ = 0;
   if (nranks_ == 1) return;  // nobody to tell
   ScopedTimer timer(stats_);
   Msg msg;
   msg.type = MSG_START;
-  msg.flags = flags;
-  msg.request_id = request_id;
-  msg.payload = encode_mat(h0);
+  msg.flags = info.flags;
+  msg.request_id = info.request_id;
+  const StartPrefix prefix{info.op, info.pos, info.session};
+  const std::vector<uint8_t> mat = encode_mat(h0);
+  msg.payload.resize(sizeof prefix + mat.size());
+  std::memcpy(msg.payload.data(), &prefix, sizeof prefix);
+  std::memcpy(msg.payload.data() + sizeof prefix, mat.data(), mat.size());
   for (int r = 1; r < nranks_; ++r) {
     if (!send_msg(fds_[r], msg)) throw std::runtime_error("lost a rank while starting a request");
     stats_.bytes_sent += msg.payload.size();
   }
 }
 
-bool Mesh::wait_request(uint64_t& request_id, uint32_t& flags, Mat& h0) {
+bool Mesh::wait_request(ReqInfo& info, Mat& h0) {
   Msg msg;
-  if (!recv_msg(fds_[0], msg) || msg.type != MSG_START) return false;
-  request_id_ = request_id = msg.request_id;
-  flags = msg.flags;
+  StartPrefix prefix;
+  if (!recv_msg(fds_[0], msg) || msg.type != MSG_START || msg.payload.size() < sizeof prefix) return false;
+  std::memcpy(&prefix, msg.payload.data(), sizeof prefix);
+  request_id_ = info.request_id = msg.request_id;
+  info.flags = msg.flags;
+  info.op = prefix.op;
+  info.pos = prefix.pos;
+  info.session = prefix.session;
   seq_ = 0;
-  h0 = decode_mat(msg.payload);
+  h0 = decode_mat(std::vector<uint8_t>(msg.payload.begin() + sizeof prefix, msg.payload.end()));
   stats_.bytes_recv += msg.payload.size();
   return true;
 }
