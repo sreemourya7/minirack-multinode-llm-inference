@@ -44,6 +44,11 @@ class WeightFile {
   // Reads one tensor from disk. Throws if the name is not in the file.
   Mat get(const std::string& name);
 
+  // Reads only rows [r0, r1) of a tensor. Rows are contiguous on disk, so
+  // this touches just those bytes: a rank that owns a slice of a matrix never
+  // reads the rest.
+  Mat get_rows(const std::string& name, int r0, int r1);
+
   // Total bytes read through get() so far (to show how big a shard is).
   uint64_t bytes_loaded() const { return bytes_loaded_; }
 

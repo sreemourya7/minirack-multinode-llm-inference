@@ -10,7 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Part 1 is the plain scalar baseline: -O2, no -march=native, no -ffast-math.
-# Hand-written SIMD arrives in Part 5 and is measured against this.
+# Hand-written SIMD arrives in Part 6 and is measured against this.
 set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 add_compile_options(-Wall -Wextra -Wpedantic)
 add_compile_definitions(_FILE_OFFSET_BITS=64 _DEFAULT_SOURCE)
@@ -20,8 +20,14 @@ add_library(mr_core STATIC
   src/weights.cpp
   src/model.cpp
   src/net.cpp
+  src/mesh.cpp
+  src/tp_model.cpp
 )
 target_include_directories(mr_core PUBLIC src)
 
 add_executable(mr_worker src/worker.cpp)
 target_link_libraries(mr_worker PRIVATE mr_core)
+
+# Part 2: one rank of the tensor-parallel rack.
+add_executable(mr_rank src/rank.cpp)
+target_link_libraries(mr_rank PRIVATE mr_core)

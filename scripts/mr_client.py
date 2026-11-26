@@ -11,12 +11,14 @@ import struct
 import numpy as np
 
 MAGIC = 0x314B524D  # "MRK1"
-HEADER = struct.Struct("<IIIIQQ")  # magic, type, flags, reserved, request_id, payload_len
+HEADER = struct.Struct("<IIIIQQ")  # magic, type, flags, seq, request_id, payload_len
 
 MSG_TOKENS = 1
 MSG_HIDDEN = 2
 MSG_LOGITS = 3
 MSG_ERROR = 4
+MSG_PING = 8
+MSG_PONG = 9
 
 FLAG_LAST_ONLY = 1
 
@@ -50,6 +52,13 @@ class Client:
                 raise ConnectionError("worker closed the connection")
             got += k
         return bytes(buf)
+
+    def ping(self):
+        """True once a Part 2 rack is fully connected and ready for requests."""
+        self.sock.sendall(HEADER.pack(MAGIC, MSG_PING, 0, 0, 0, 0))
+        magic, mtype, _flags, _seq, _id, plen = HEADER.unpack(self._recv_exact(HEADER.size))
+        self._recv_exact(plen)
+        return magic == MAGIC and mtype == MSG_PONG
 
     def forward(self, token_ids, last_only=False):
         """Runs the whole chain on token_ids. Returns float32 logits [T or 1, vocab]."""

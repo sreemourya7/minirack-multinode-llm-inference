@@ -42,6 +42,9 @@ Shard load_shard(WeightFile& wf, int first_layer, int last_layer, bool has_embed
 // tokens -> [T, D] hidden states (token embedding + position embedding).
 Mat embed(const Shard& s, const std::vector<int32_t>& ids);
 
+// The same lookup, given the two tables directly (used by the Part 2 ranks).
+Mat embed_tokens(const ModelConfig& cfg, const Mat& wte, const Mat& wpe, const std::vector<int32_t>& ids);
+
 // Runs this shard's blocks in place on h ([T, D]).
 void run_blocks(const Shard& s, Mat& h);
 

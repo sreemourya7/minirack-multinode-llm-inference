@@ -71,7 +71,7 @@ order, so 1 worker and 3 workers agree bit for bit. The test checks both.
 | Replies travel back along the chain | One connection per hop; the client only knows worker 0 | Logits are copied once per hop (use `last_only` to keep that small) |
 | `TCP_NODELAY` on every socket | Request/reply traffic should not wait for Nagle's batching | Nothing for this traffic pattern |
 | A bad request gets an error reply; the worker stays up | One bad input must not take a node down | A little extra code in the request loop |
-| Plain scalar loops, `-O2`, no `-march=native` | An honest baseline for Part 5 to beat | Speed, for now |
+| Plain scalar loops, `-O2`, no `-march=native` | An honest baseline for Part 6 to beat | Speed, for now |
 | No KV cache yet | Correctness first | Every request recomputes all tokens, so time grows with length |
 | Linux / POSIX sockets | What inference infrastructure runs on | Needs WSL2 on Windows |
 | Hugging Face as the reference, not our own PyTorch code | An independent implementation catches mistakes a self-written one would repeat | A heavier test dependency |

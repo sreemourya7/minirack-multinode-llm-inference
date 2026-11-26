@@ -25,6 +25,30 @@ Mat linear(const Mat& x, const Mat& w, const Mat& b) {
   return y;
 }
 
+Mat matmul(const Mat& x, const Mat& w) {
+  if (x.cols != w.rows) throw std::runtime_error("matmul: shape mismatch");
+  const int T = x.rows, in = w.rows, out = w.cols;
+  Mat y(T, out);
+  for (int t = 0; t < T; ++t) {
+    float* yt = y.row(t);
+    const float* xt = x.row(t);
+    for (int i = 0; i < in; ++i) {
+      const float xi = xt[i];
+      const float* wi = w.row(i);
+      for (int o = 0; o < out; ++o) yt[o] += xi * wi[o];
+    }
+  }
+  return y;
+}
+
+void add_row_inplace(Mat& a, const Mat& row) {
+  if (row.rows != 1 || row.cols != a.cols) throw std::runtime_error("add_row: shape mismatch");
+  for (int t = 0; t < a.rows; ++t) {
+    float* at = a.row(t);
+    for (int d = 0; d < a.cols; ++d) at[d] += row.data[d];
+  }
+}
+
 Mat layernorm(const Mat& x, const Mat& gamma, const Mat& beta, float eps) {
   if (gamma.cols != x.cols || beta.cols != x.cols) throw std::runtime_error("layernorm: shape mismatch");
   Mat y(x.rows, x.cols);

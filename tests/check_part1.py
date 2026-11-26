@@ -24,11 +24,11 @@ import time
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(ROOT, "scripts"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mr_client import Client, WorkerError  # noqa: E402
+from common import ROOT, free_ports, reference_logits, test_sequences  # noqa: E402
+
+from mr_client import Client, WorkerError  # noqa: E402  (path set up by common)
 
 # Each entry: list of (first_layer, last_layer) per worker, in chain order.
 SPLITS = {
@@ -37,18 +37,6 @@ SPLITS = {
     "2 workers (1 | 11)": [(0, 1), (1, 12)],
     "3 workers (4 | 4 | 4)": [(0, 4), (4, 8), (8, 12)],
 }
-LENGTHS = [1, 2, 7, 16, 32]
-
-
-def free_ports(n):
-    socks = [socket.socket() for _ in range(n)]
-    for s in socks:
-        s.bind(("127.0.0.1", 0))
-    ports = [s.getsockname()[1] for s in socks]
-    for s in socks:
-        s.close()
-    return ports
-
 
 def wait_for_port(port, proc, timeout=60.0):
     deadline = time.time() + timeout
@@ -97,19 +85,6 @@ class Rack:
             p.wait(timeout=10)
 
 
-def reference_logits(hf_dir, sequences):
-    import torch
-    from transformers import GPT2LMHeadModel
-
-    torch.set_grad_enabled(False)
-    model = GPT2LMHeadModel.from_pretrained(hf_dir, local_files_only=True).eval()
-    out = []
-    for ids in sequences:
-        logits = model(torch.tensor([ids], dtype=torch.long)).logits[0]
-        out.append(logits.numpy().astype(np.float32))
-    return out, model.config.vocab_size, model.config.n_positions
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", required=True, help=".mrkw file from scripts/export_weights.py")
@@ -120,10 +95,7 @@ def main():
     args = ap.parse_args()
     os.makedirs(args.log_dir, exist_ok=True)
 
-    rng = np.random.default_rng(0)
-    sequences = [rng.integers(0, 50257, size=n).tolist() for n in LENGTHS]
-    # "Hello, my dog is cute" in GPT-2 tokens: a real sentence alongside the random ones.
-    sequences.append([15496, 11, 616, 3290, 318, 13779])
+    sequences = test_sequences()
 
     print("computing PyTorch reference ...", flush=True)
     refs, vocab, n_ctx = reference_logits(args.hf_dir, sequences)

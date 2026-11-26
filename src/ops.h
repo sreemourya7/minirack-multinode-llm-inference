@@ -1,7 +1,7 @@
 // ops.h - the handful of math operations a GPT-2 decoder block needs.
 //
 // Part 1 keeps these as plain scalar loops. They are the correctness baseline;
-// Part 5 replaces the hot ones with AVX2 and measures the difference.
+// Part 6 replaces the hot ones with AVX2 and measures the difference.
 #pragma once
 
 #include "mat.h"
@@ -13,6 +13,14 @@ namespace mr {
 // GPT-2 stores its weights as [in, out] (its "Conv1D" layer), which is the
 // transpose of torch.nn.Linear. We keep the file layout and index accordingly.
 Mat linear(const Mat& x, const Mat& w, const Mat& b);
+
+// y = x @ w, with no bias.   x: [T, in]   w: [in, out]   ->   y: [T, out]
+// Used when a rank computes only a partial result: the bias is added once,
+// after the partial results have been summed.
+Mat matmul(const Mat& x, const Mat& w);
+
+// Adds the single-row matrix `row` to every row of a.
+void add_row_inplace(Mat& a, const Mat& row);
 
 // Layer normalisation over the feature axis, one row (token) at a time.
 Mat layernorm(const Mat& x, const Mat& gamma, const Mat& beta, float eps);

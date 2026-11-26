@@ -67,4 +67,18 @@ Mat WeightFile::get(const std::string& name) {
   return m;
 }
 
+Mat WeightFile::get_rows(const std::string& name, int r0, int r1) {
+  auto it = index_.find(name);
+  if (it == index_.end()) throw std::runtime_error("tensor not in weight file: " + name);
+  const Entry& e = it->second;
+  if (r0 < 0 || r1 > static_cast<int>(e.rows) || r0 > r1) throw std::runtime_error("bad row range for " + name);
+  Mat m(r1 - r0, static_cast<int>(e.cols));
+  const uint64_t skip = static_cast<uint64_t>(r0) * e.cols * sizeof(float);
+  if (fseeko(f_, static_cast<off_t>(e.offset + skip), SEEK_SET) != 0) throw std::runtime_error("weight file: seek failed");
+  const size_t nbytes = m.size() * sizeof(float);
+  if (nbytes > 0) read_exact(f_, m.data.data(), nbytes);
+  bytes_loaded_ += nbytes;
+  return m;
+}
+
 }  // namespace mr

@@ -22,7 +22,7 @@ struct Header {
   uint32_t magic;
   uint32_t type;
   uint32_t flags;
-  uint32_t reserved;
+  uint32_t seq;
   uint64_t request_id;
   uint64_t payload_len;
 };
@@ -128,7 +128,7 @@ bool send_msg(int fd, const Msg& m) {
   h.magic = kMagic;
   h.type = m.type;
   h.flags = m.flags;
-  h.reserved = 0;
+  h.seq = m.seq;
   h.request_id = m.request_id;
   h.payload_len = m.payload.size();
   if (!send_all(fd, &h, sizeof h)) return false;
@@ -142,6 +142,7 @@ bool recv_msg(int fd, Msg& m) {
   if (h.magic != kMagic || h.payload_len > kMaxPayload) return false;
   m.type = h.type;
   m.flags = h.flags;
+  m.seq = h.seq;
   m.request_id = h.request_id;
   m.payload.resize(h.payload_len);
   if (h.payload_len > 0 && !recv_all(fd, m.payload.data(), m.payload.size())) return false;

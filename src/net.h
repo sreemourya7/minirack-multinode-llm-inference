@@ -9,7 +9,7 @@
 //   0       4     magic       0x314B524D ("MRK1") - catches garbage / wrong peer
 //   4       4     type        MsgType below
 //   8       4     flags       FLAG_* bits
-//   12      4     reserved    0
+//   12      4     seq         step counter inside a request (0 in Part 1; see mesh.h)
 //   16      8     request_id  echoed back in the reply
 //   24      8     payload_len bytes of payload that follow
 //
@@ -29,6 +29,13 @@ enum MsgType : uint32_t {
   MSG_HIDDEN = 2,  // worker -> next worker.    payload: u32 rows, u32 cols, float32 data
   MSG_LOGITS = 3,  // reply, last worker -> ... -> client. same layout as MSG_HIDDEN
   MSG_ERROR = 4,   // reply. payload: UTF-8 text
+
+  // --- Part 2: tensor-parallel ranks (see mesh.h) ---
+  MSG_HELLO = 5,   // rank -> root at startup.  payload: u32 rank, u32 nranks
+  MSG_START = 6,   // root -> every rank: a request begins. payload: the embedded input [T, D]
+  MSG_COLL = 7,    // data inside a collective.  payload: a matrix, or 8 bytes of checksum
+  MSG_PING = 8,    // client -> root: are you ready?
+  MSG_PONG = 9,    // root -> client: yes
 };
 
 enum : uint32_t {
@@ -38,6 +45,7 @@ enum : uint32_t {
 struct Msg {
   uint32_t type = 0;
   uint32_t flags = 0;
+  uint32_t seq = 0;
   uint64_t request_id = 0;
   std::vector<uint8_t> payload;
 };

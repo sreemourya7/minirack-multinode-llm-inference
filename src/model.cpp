@@ -50,16 +50,20 @@ Shard load_shard(WeightFile& wf, int first_layer, int last_layer, bool has_embed
 
 Mat embed(const Shard& s, const std::vector<int32_t>& ids) {
   if (!s.has_embed) throw std::runtime_error("this worker does not hold the embedding");
+  return embed_tokens(s.cfg, s.wte, s.wpe, ids);
+}
+
+Mat embed_tokens(const ModelConfig& cfg, const Mat& wte, const Mat& wpe, const std::vector<int32_t>& ids) {
   const int T = static_cast<int>(ids.size());
-  const int D = static_cast<int>(s.cfg.n_embd);
+  const int D = static_cast<int>(cfg.n_embd);
   if (T == 0) throw std::runtime_error("empty token sequence");
-  if (T > static_cast<int>(s.cfg.n_ctx)) throw std::runtime_error("sequence longer than the context window");
+  if (T > static_cast<int>(cfg.n_ctx)) throw std::runtime_error("sequence longer than the context window");
   Mat h(T, D);
   for (int t = 0; t < T; ++t) {
     const int32_t id = ids[t];
-    if (id < 0 || id >= static_cast<int32_t>(s.cfg.vocab_size)) throw std::runtime_error("token id out of range");
-    const float* te = s.wte.row(id);
-    const float* pe = s.wpe.row(t);
+    if (id < 0 || id >= static_cast<int32_t>(cfg.vocab_size)) throw std::runtime_error("token id out of range");
+    const float* te = wte.row(id);
+    const float* pe = wpe.row(t);
     float* ht = h.row(t);
     for (int d = 0; d < D; ++d) ht[d] = te[d] + pe[d];
   }
