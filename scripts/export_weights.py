@@ -13,12 +13,15 @@ at the front of the file and a worker can read just its own shard.
 """
 import argparse
 import json
+import os
 import struct
+import sys
 
 import numpy as np
 
-MAGIC = b"MRKW"
-VERSION = 1
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from mrkw import CONFIG_KEYS, write_mrkw  # noqa: E402
 
 
 def read_safetensors(path):
@@ -65,30 +68,8 @@ def main():
             raise ValueError(f"{name}: unexpected shape {arr.shape}")
         keep.append((name, arr))
 
-    # Work out where each tensor's data will sit, so the index can be written first.
-    index_size = sum(4 + len(name.encode()) + 4 + 4 + 8 for name, _ in keep)
-    header_size = 4 + 4 + 5 * 4 + 4
-    offset = header_size + index_size
-    offsets = []
-    for _, arr in keep:
-        offsets.append(offset)
-        offset += arr.size * 4
-
-    with open(args.out, "wb") as f:
-        f.write(MAGIC)
-        f.write(struct.pack("<I", VERSION))
-        f.write(struct.pack("<5I", cfg["n_layer"], cfg["n_head"], cfg["n_embd"], cfg["vocab_size"], cfg["n_ctx"]))
-        f.write(struct.pack("<I", len(keep)))
-        for (name, arr), off in zip(keep, offsets):
-            raw = name.encode()
-            f.write(struct.pack("<I", len(raw)))
-            f.write(raw)
-            f.write(struct.pack("<IIQ", arr.shape[0], arr.shape[1], off))
-        for (name, arr), off in zip(keep, offsets):
-            assert f.tell() == off, name
-            f.write(np.ascontiguousarray(arr, dtype="<f4").tobytes())
-
-    print(f"wrote {args.out}: {len(keep)} tensors, {offset / 1e6:.1f} MB")
+    size = write_mrkw(args.out, {k: cfg[k] for k in CONFIG_KEYS}, keep)
+    print(f"wrote {args.out}: {len(keep)} tensors, {size / 1e6:.1f} MB")
 
 
 if __name__ == "__main__":

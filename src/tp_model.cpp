@@ -35,7 +35,7 @@ Mat hcat3(const Mat& a, const Mat& b, const Mat& c) {
 
 }  // namespace
 
-TpShard load_tp_shard(WeightFile& wf, int rank, int nranks) {
+TpShard load_tp_shard(WeightFile& wf, int rank, int nranks, WeightFile* moe) {
   TpShard s;
   s.cfg = wf.config();
   s.rank = rank;
@@ -51,6 +51,24 @@ TpShard load_tp_shard(WeightFile& wf, int rank, int nranks) {
   s.vocab_begin = part_begin(V, nranks, rank);
   s.vocab_end = part_begin(V, nranks, rank + 1);
   const int a0 = s.head_begin * dh, a1 = s.head_end * dh;  // my columns inside one of q / k / v
+
+  if (moe) {
+    // The sidecar's "moe.config" tensor holds [n_expert, top_k, gate mode].
+    // Keeping the settings in the file (not on the command line) means every
+    // rank is guaranteed to use the same ones.
+    const Mat c = moe->get("moe.config");
+    if (c.size() != 3) throw std::runtime_error("bad moe.config");
+    s.moe.enabled = true;
+    s.moe.n_expert = static_cast<int>(c.data[0]);
+    s.moe.top_k = static_cast<int>(c.data[1]);
+    s.moe.softmax_gate = c.data[2] != 0.0f;
+    if (moe->config().n_layer != s.cfg.n_layer || moe->config().n_embd != s.cfg.n_embd) {
+      throw std::runtime_error("the MoE file was made for a different model");
+    }
+    if (nranks > s.moe.n_expert) throw std::runtime_error("more ranks than experts: each rank needs at least one expert");
+    s.expert_begin = part_begin(s.moe.n_expert, nranks, rank);
+    s.expert_end = part_begin(s.moe.n_expert, nranks, rank + 1);
+  }
 
   for (int l = 0; l < static_cast<int>(s.cfg.n_layer); ++l) {
     const std::string p = "h." + std::to_string(l) + ".";
@@ -72,12 +90,32 @@ TpShard load_tp_shard(WeightFile& wf, int rank, int nranks) {
     {
       const Mat w = wf.get(p + "mlp.c_fc.weight");
       const Mat bias = wf.get(p + "mlp.c_fc.bias");
-      s.unit_begin = part_begin(w.cols, nranks, rank);
-      s.unit_end = part_begin(w.cols, nranks, rank + 1);
-      b.fc_w = slice_cols(w, s.unit_begin, s.unit_end);
-      b.fc_b = slice_cols(bias, s.unit_begin, s.unit_end);
+      if (!s.moe.enabled) {
+        s.unit_begin = part_begin(w.cols, nranks, rank);
+        s.unit_end = part_begin(w.cols, nranks, rank + 1);
+        b.fc_w = slice_cols(w, s.unit_begin, s.unit_end);
+        b.fc_b = slice_cols(bias, s.unit_begin, s.unit_end);
+        b.mproj_w = wf.get_rows(p + "mlp.c_proj.weight", s.unit_begin, s.unit_end);
+      } else {
+        // Expert e is hidden units [e * per, (e + 1) * per) of the original MLP.
+        if (w.cols % s.moe.n_expert != 0) throw std::runtime_error("MLP width is not divisible by the number of experts");
+        const int per = w.cols / s.moe.n_expert;
+        s.unit_begin = s.expert_begin * per;
+        s.unit_end = s.expert_end * per;
+        for (int e = s.expert_begin; e < s.expert_end; ++e) {
+          Expert ex;
+          ex.fc_w = slice_cols(w, e * per, (e + 1) * per);
+          ex.fc_b = slice_cols(bias, e * per, (e + 1) * per);
+          ex.mproj_w = wf.get_rows(p + "mlp.c_proj.weight", e * per, (e + 1) * per);
+          s.resident_bytes += (ex.fc_w.size() + ex.fc_b.size() + ex.mproj_w.size()) * sizeof(float);
+          b.experts.push_back(std::move(ex));
+        }
+        b.router_w = moe->get(p + "moe.router.weight");
+        b.router_b = moe->get(p + "moe.router.bias");
+        if (b.router_w.rows != D || b.router_w.cols != s.moe.n_expert) throw std::runtime_error("bad router shape");
+        s.resident_bytes += (b.router_w.size() + b.router_b.size()) * sizeof(float);
+      }
     }
-    b.mproj_w = wf.get_rows(p + "mlp.c_proj.weight", s.unit_begin, s.unit_end);
     b.mproj_b = wf.get(p + "mlp.c_proj.bias");
 
     for (const Mat* m : {&b.ln1_g, &b.ln1_b, &b.qkv_w, &b.qkv_b, &b.aproj_w, &b.aproj_b, &b.ln2_g, &b.ln2_b, &b.fc_w,
@@ -99,8 +137,9 @@ TpShard load_tp_shard(WeightFile& wf, int rank, int nranks) {
   return s;
 }
 
-void tp_forward(const TpShard& s, Mesh& mesh, Mat& h) {
+void tp_forward(const TpShard& s, Mesh& mesh, Mat& h, TpStats* stats) {
   const int my_heads = s.head_end - s.head_begin;
+  if (stats && s.moe.enabled) stats->expert_load.assign(static_cast<size_t>(s.moe.n_expert), 0);
   for (const TpBlock& b : s.blocks) {
     // --- attention half ---
     {
@@ -115,10 +154,21 @@ void tp_forward(const TpShard& s, Mesh& mesh, Mat& h) {
     // --- MLP half ---
     {
       Mat x = layernorm(h, b.ln2_g, b.ln2_b, 1e-5f);
-      Mat up = linear(x, b.fc_w, b.fc_b);                // MY hidden units only, [T, U]
-      gelu_inplace(up);
-      Mat y = matmul(up, b.mproj_w);                     // MY units' share of the output, [T, D]
-      mesh.all_reduce_sum(y);                            // sum over ALL hidden units
+      Mat y;
+      if (!s.moe.enabled) {
+        Mat up = linear(x, b.fc_w, b.fc_b);              // MY hidden units only, [T, U]
+        gelu_inplace(up);
+        y = matmul(up, b.mproj_w);                       // MY units' share of the output, [T, D]
+      } else {
+        // Every rank works out the routing for all tokens (it is cheap and
+        // needs no messages), then runs only its own experts.
+        const Routing route = moe_route(x, b.router_w, b.router_b, s.moe);
+        y = moe_run_local(x, route, b.experts, s.expert_begin, stats ? &stats->expert_rows : nullptr);
+        if (stats) {
+          for (int32_t e : route.expert) ++stats->expert_load[static_cast<size_t>(e)];
+        }
+      }
+      mesh.all_reduce_sum(y);                            // sum over ALL hidden units / chosen experts
       add_row_inplace(y, b.mproj_b);
       add_inplace(h, y);
     }

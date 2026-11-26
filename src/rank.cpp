@@ -11,9 +11,13 @@
 //
 //   root:   mr_rank --rank 0 --nranks N --weights FILE --port P
 //   others: mr_rank --rank R --nranks N --weights FILE --root HOST:PORT
+//
+// Add --moe FILE (the same file on every rank) to turn each layer's MLP into
+// a Mixture of Experts (Part 3).
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -29,6 +33,7 @@ struct Options {
   int rank = -1;
   int nranks = 0;
   std::string weights;
+  std::string moe;
   int port = 0;
   std::string root_host;
   int root_port = 0;
@@ -37,7 +42,7 @@ struct Options {
 [[noreturn]] void usage(const char* msg) {
   std::fprintf(stderr,
                "error: %s\n\n"
-               "usage: mr_rank --rank R --nranks N --weights FILE (--port P | --root HOST:PORT)\n"
+               "usage: mr_rank --rank R --nranks N --weights FILE [--moe FILE] (--port P | --root HOST:PORT)\n"
                "  rank 0 is the root: give it --port (clients and other ranks connect there)\n"
                "  every other rank: give it --root HOST:PORT\n",
                msg);
@@ -58,6 +63,8 @@ Options parse(int argc, char** argv) {
       o.nranks = std::atoi(value().c_str());
     } else if (a == "--weights") {
       o.weights = value();
+    } else if (a == "--moe") {
+      o.moe = value();
     } else if (a == "--port") {
       o.port = std::atoi(value().c_str());
     } else if (a == "--root") {
@@ -82,19 +89,23 @@ double ms_since(std::chrono::steady_clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-void log_request(const mr::Mesh& mesh, uint64_t id, int T, double total_ms) {
+void log_request(const mr::Mesh& mesh, uint64_t id, int T, double total_ms, const mr::TpStats& st) {
   const mr::CommStats& c = mesh.stats();
+  std::string load;  // tokens routed to each expert, e.g. "31,12,40,..."
+  for (uint64_t n : st.expert_load) load += (load.empty() ? "" : ",") + std::to_string(n);
   std::fprintf(stderr,
                "[rank %d/%d] req %llu T=%d total_ms=%.1f compute_ms=%.1f collective_ms=%.1f collectives=%llu "
-               "sent_kb=%.1f recv_kb=%.1f\n",
+               "sent_kb=%.1f recv_kb=%.1f expert_rows=%llu expert_load=[%s]\n",
                mesh.rank(), mesh.size(), static_cast<unsigned long long>(id), T, total_ms, total_ms - c.seconds * 1e3,
-               c.seconds * 1e3, static_cast<unsigned long long>(c.calls), c.bytes_sent / 1e3, c.bytes_recv / 1e3);
+               c.seconds * 1e3, static_cast<unsigned long long>(c.calls), c.bytes_sent / 1e3, c.bytes_recv / 1e3,
+               static_cast<unsigned long long>(st.expert_rows), load.c_str());
 }
 
 // The program every rank runs once it has the input h. On the root, `logits`
 // comes back filled; elsewhere it stays empty.
-void run_request(const mr::TpShard& shard, mr::Mesh& mesh, mr::Mat& h, uint32_t flags, mr::Mat& logits) {
-  mr::tp_forward(shard, mesh, h);
+void run_request(const mr::TpShard& shard, mr::Mesh& mesh, mr::Mat& h, uint32_t flags, mr::Mat& logits,
+                 mr::TpStats& stats) {
+  mr::tp_forward(shard, mesh, h, &stats);
   // Test hook: MR_TEST_CORRUPT_RANK=R makes rank R damage its copy of h, so
   // the test suite can prove that check_identical really catches it.
   if (const char* v = std::getenv("MR_TEST_CORRUPT_RANK"); v && std::atoi(v) == mesh.rank()) h.data[0] += 1e-3f;
@@ -137,11 +148,12 @@ int serve_as_root(const Options& opt, const mr::TpShard& shard, mr::Mesh& mesh) 
           started = true;
           mesh.start_request(req.request_id, req.flags, h);
           mr::Mat logits;
-          run_request(shard, mesh, h, req.flags, logits);
+          mr::TpStats stats;
+          run_request(shard, mesh, h, req.flags, logits, stats);
           reply.type = mr::MSG_LOGITS;
           reply.flags = req.flags;
           reply.payload = mr::encode_mat(logits);
-          log_request(mesh, req.request_id, T, ms_since(t0));
+          log_request(mesh, req.request_id, T, ms_since(t0), stats);
         } catch (const std::exception& e) {
           reply = mr::make_error(req.request_id, e.what());
           // A failure after the request started means the ranks are no longer
@@ -176,8 +188,9 @@ int serve_as_rank(const Options& opt, const mr::TpShard& shard, mr::Mesh& mesh) 
     const auto t0 = std::chrono::steady_clock::now();
     const int T = h.rows;
     mr::Mat unused;
-    run_request(shard, mesh, h, flags, unused);
-    log_request(mesh, id, T, ms_since(t0));
+    mr::TpStats stats;
+    run_request(shard, mesh, h, flags, unused, stats);
+    log_request(mesh, id, T, ms_since(t0), stats);
   }
 }
 
@@ -187,7 +200,14 @@ int main(int argc, char** argv) {
   const Options opt = parse(argc, argv);
   try {
     mr::WeightFile wf(opt.weights);
-    const mr::TpShard shard = mr::load_tp_shard(wf, opt.rank, opt.nranks);
+    std::unique_ptr<mr::WeightFile> moe;
+    if (!opt.moe.empty()) moe = std::make_unique<mr::WeightFile>(opt.moe);
+    const mr::TpShard shard = mr::load_tp_shard(wf, opt.rank, opt.nranks, moe.get());
+    if (shard.moe.enabled) {
+      std::fprintf(stderr, "[rank %d/%d] MoE: %d experts, top-%d, %s gates, my experts %d-%d\n", opt.rank, opt.nranks,
+                   shard.moe.n_expert, shard.moe.top_k, shard.moe.softmax_gate ? "softmax" : "unit", shard.expert_begin,
+                   shard.expert_end);
+    }
     mr::Mesh mesh(opt.rank, opt.nranks);
     return opt.rank == 0 ? serve_as_root(opt, shard, mesh) : serve_as_rank(opt, shard, mesh);
   } catch (const std::exception& e) {

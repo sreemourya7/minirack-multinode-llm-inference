@@ -21,6 +21,7 @@
 
 #include "mat.h"
 #include "mesh.h"
+#include "moe.h"
 #include "weights.h"
 
 namespace mr {
@@ -34,6 +35,11 @@ struct TpBlock {
   Mat fc_w, fc_b;        // [D, U], [1, U]: MLP-up columns for MY hidden units
   Mat mproj_w;           // [U, D]: MLP-down rows for MY hidden units
   Mat mproj_b;           // [1, D]: replicated, added once after the all-reduce
+
+  // Part 3, MoE mode only. The MLP above (fc_w, fc_b, mproj_w) is then left
+  // empty and replaced by a router plus this rank's experts.
+  Mat router_w, router_b;        // [D, E], [1, E]: replicated, so every rank routes identically
+  std::vector<Expert> experts;   // the experts this rank owns
 };
 
 struct TpShard {
@@ -43,6 +49,9 @@ struct TpShard {
   int head_begin = 0, head_end = 0;    // my attention heads
   int unit_begin = 0, unit_end = 0;    // my MLP hidden units
   int vocab_begin = 0, vocab_end = 0;  // my slice of the vocabulary
+
+  MoeConfig moe;                         // moe.enabled is false for the dense model
+  int expert_begin = 0, expert_end = 0;  // my experts (MoE mode)
 
   std::vector<TpBlock> blocks;
   Mat lnf_g, lnf_b;  // replicated
@@ -57,11 +66,20 @@ struct TpShard {
 // Slice [0, n) into `parts` contiguous pieces of near-equal size.
 inline int part_begin(int n, int parts, int i) { return static_cast<int>(static_cast<int64_t>(n) * i / parts); }
 
-TpShard load_tp_shard(WeightFile& wf, int rank, int nranks);
+// What one request did, for the logs.
+struct TpStats {
+  uint64_t expert_rows = 0;           // (token, expert) pairs THIS rank executed
+  std::vector<uint64_t> expert_load;  // tokens routed to each expert, all ranks, summed over layers
+};
+
+// `moe` is the optional MoE sidecar file (router weights and settings). With
+// it, each layer's MLP becomes a Mixture of Experts; without it, the model is
+// plain GPT-2.
+TpShard load_tp_shard(WeightFile& wf, int rank, int nranks, WeightFile* moe = nullptr);
 
 // Runs all layers on h. Every rank calls this with the same h and ends with
 // the same h. Two all-reduces per layer.
-void tp_forward(const TpShard& s, Mesh& mesh, Mat& h);
+void tp_forward(const TpShard& s, Mesh& mesh, Mat& h, TpStats* stats = nullptr);
 
 // Final layernorm, then logits for MY slice of the vocabulary only.
 Mat tp_head_local(const TpShard& s, const Mat& h, bool last_only);
