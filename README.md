@@ -7,7 +7,7 @@ is used at run time; PyTorch appears only in the tests, as the reference the
 output is checked against.
 
 The aim is to work through the problems a real inference runtime has to solve,
-at a size that fits on a laptop:
+at a size that fits on a personal laptop:
 
 - splitting a model across nodes, and moving activations between them
 - running only part of the model per token (Mixture of Experts)
